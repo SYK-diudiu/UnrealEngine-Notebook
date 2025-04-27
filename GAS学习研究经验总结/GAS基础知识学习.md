@@ -104,7 +104,7 @@ float MaxHealth = Health.GetBaseValue(); // 假设BaseValue为最大值
 Health.SetCurrentValue(50.f);
 Health.SetBaseValue(100.f);
 
-// 通过GameplayEffect（我比较推荐使用）
+// 通过GameplayEffect（我比较推荐使用这种方式）
 UAbilitySystemComponent* ASC = GetAbilitySystemComponent();
 ASC->ApplyModToAttribute(Health, EGameplayModOp::Additive, 20.f);
 ```
@@ -261,7 +261,135 @@ void UCustomAttributeSet::OnRep_Health(const FGameplayAttributeData& OldHealth) 
 }
 ```
 
+### **Attribute_Accessors**
 
+添加了属性之后，我们知道，通常都会有一个初始化的操作，那么在**Attribute Set**中如何初始化属性？`GAS`为我们提供了相关的宏。
+
+#### 使用单一的宏
+
+还是以`Health`属性为例，如果需要在添加了`Health`之后初始化它的数值，我们只需要使用宏`GAMEPLAYATTRIBUTE_VALUE_INITTER(Health)`即可创建一个用于初始化Health属性的函数：`InitHealth()`。这个函数接收一个浮点数参数用于初始化操作。
+
+宏写在属性下面即可，没有特殊要求。
+
+```cpp
+UPROPERTY(BlueprintReadOnly, ReplicatedUsing = OnRep_Health, Category = "Vital Attribute")
+FGameplayAttributeData Health;
+/*创建Health的初始化函数*/
+GAMEPLAYATTRIBUTE_VALUE_INITTER(Health);
+```
+
+写了上面的代码之后，宏就为我们创建了函数`InitHealth()`，属性名是`Health`那么函数名就是`InitHealth`，也就是说**函数名**取决于我们带给宏的那个**属性名**。
+
+我们不需要手动书写有关该函数的任何内容，直接使用即可。比如可以在构造函数中调用它来为`Health`设置基础数值。
+
+```cpp
+UCustomAttributeSet::UCustomAttributeSet()
+{
+    //这里直接调用
+	InitHealth(100.f);
+}
+```
+
+有些时候可能我们不只需要一个`InitHealth()`，可能还需要属性的`Get`和`Set`函数。我们可以使用类似的宏`GAMEPLAYATTRIBUTE_VALUE_GETTER`和`GAMEPLAYATTRIBUTE_VALUE_SETTER`来创建对应的函数`GetHealth()`、`SetHealth()`。
+
+```cpp
+UPROPERTY(BlueprintReadOnly, ReplicatedUsing = OnRep_Health, Category = "Vital Attribute")
+FGameplayAttributeData Health;
+/*创建Health的初始化函数*/
+GAMEPLAYATTRIBUTE_VALUE_INITTER(Health);
+GAMEPLAYATTRIBUTE_VALUE_GETTER(Health);
+GAMEPLAYATTRIBUTE_VALUE_SETTER(Health);
+```
+
+这样存在一个小问题，如果属性数量非常庞大，每个属性都需要写三个这样的宏，那会有很大的工作量，作为程序员我们一定不希望这样。因此，可以将它们统一定义为一个新的宏`ATTRIBUTE_ACCESSORS`，利用它来**“一键”**创建有关属性的这些函数（`Get`、`Set`、`Init`）。
+
+#### 使用多个宏的组合（重点）
+
+应该怎么做？请看，下面是`GAS`框架中`AttributeSet.h`文件末尾部分的代码片段，代码中就展示了我们刚才使用到的那些创建函数用的宏。
+
+在注释12-16行，开发者为我们提供了一个建议，他建议我们直接使用这段代码来将所有的宏定义在一起，称之为`ATTRIBUTE_ACCESSORS`，这样我们只需要使用一个宏即可实现所有函数的创建了。
+
+```cpp
+/**
+ * This defines a set of helper functions for accessing and initializing attributes, to avoid having to manually write these functions.
+ * It would creates the following functions, for attribute Health
+ *
+ *	static FGameplayAttribute UMyHealthSet::GetHealthAttribute();
+ *	FORCEINLINE float UMyHealthSet::GetHealth() const;
+ *	FORCEINLINE void UMyHealthSet::SetHealth(float NewVal);
+ *	FORCEINLINE void UMyHealthSet::InitHealth(float NewVal);
+ *
+ * To use this in your game you can define something like this, and then add game-specific functions as necessary:
+ * 
+ *	#define ATTRIBUTE_ACCESSORS(ClassName, PropertyName) \
+ *	GAMEPLAYATTRIBUTE_PROPERTY_GETTER(ClassName, PropertyName) \
+ *	GAMEPLAYATTRIBUTE_VALUE_GETTER(PropertyName) \
+ *	GAMEPLAYATTRIBUTE_VALUE_SETTER(PropertyName) \
+ *	GAMEPLAYATTRIBUTE_VALUE_INITTER(PropertyName)
+ * 
+ *	ATTRIBUTE_ACCESSORS(UMyHealthSet, Health)
+ */
+
+#define GAMEPLAYATTRIBUTE_PROPERTY_GETTER(ClassName, PropertyName) \
+	static FGameplayAttribute Get##PropertyName##Attribute() \
+	{ \
+		static FProperty* Prop = FindFieldChecked<FProperty>(ClassName::StaticClass(), GET_MEMBER_NAME_CHECKED(ClassName, PropertyName)); \
+		return Prop; \
+	}
+
+#define GAMEPLAYATTRIBUTE_VALUE_GETTER(PropertyName) \
+	FORCEINLINE float Get##PropertyName() const \
+	{ \
+		return PropertyName.GetCurrentValue(); \
+	}
+
+#define GAMEPLAYATTRIBUTE_VALUE_SETTER(PropertyName) \
+	FORCEINLINE void Set##PropertyName(float NewVal) \
+	{ \
+		UAbilitySystemComponent* AbilityComp = GetOwningAbilitySystemComponent(); \
+		if (ensure(AbilityComp)) \
+		{ \
+			AbilityComp->SetNumericAttributeBase(Get##PropertyName##Attribute(), NewVal); \
+		}; \
+	}
+
+#define GAMEPLAYATTRIBUTE_VALUE_INITTER(PropertyName) \
+	FORCEINLINE void Init##PropertyName(float NewVal) \
+	{ \
+		PropertyName.SetBaseValue(NewVal); \
+		PropertyName.SetCurrentValue(NewVal); \
+	}
+```
+
+我们取出代码注释12-16行的内容，将它写在头文件中，这就是我们定义的属性访问器。
+
+```cpp
+//定义属性访问器
+#define ATTRIBUTE_ACCESSORS(ClassName, PropertyName) \
+ 	GAMEPLAYATTRIBUTE_PROPERTY_GETTER(ClassName, PropertyName) \
+ 	GAMEPLAYATTRIBUTE_VALUE_GETTER(PropertyName) \
+ 	GAMEPLAYATTRIBUTE_VALUE_SETTER(PropertyName) \
+ 	GAMEPLAYATTRIBUTE_VALUE_INITTER(PropertyName)
+/*可以看到这个属性访问器集合了前面提到的三种宏，还有一个用于获取该属性的宏*/
+```
+
+仍然以`Health`属性为例，现在我们可以这样写。
+
+```cpp
+UPROPERTY(BlueprintReadOnly, ReplicatedUsing = OnRep_Health, Category = "Vital Attribute")
+FGameplayAttributeData Health;
+
+/*创建Health的属性访问器*/
+ATTRIBUTE_ACCESSORS(UCustomAttributeSet, Health);
+```
+
+该宏需要属性所在的类名和属性名，使用该宏与使用前面那些宏具有相同的功效，现在我们可以直接调用`InitHealth`、`GetHealth()`、`SetHealth()`这些函数了。
+
+#### 注意事项
+
+关于这部分，我们虽然可以直接调用`SetHealth()`函数，但是我不建议使用这种方式修改属性的值，在`GAS`的框架中有专门用来改变属性的功能：`Gameplay Effect`，简称`GE`。我们通常会使用它来修改`Attribute Set`中的属性值。
+
+因此尽管我们的确可以使用`SetHealth()`等来修改属性值，但它绝对不是一个理想的方案。
 
 ## Gameplay Ability
 
