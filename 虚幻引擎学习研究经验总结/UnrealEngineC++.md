@@ -44,7 +44,7 @@
 
 
 
-## 项目代码功能介绍
+## 虚幻项目构建相关内容介绍
 
 ### 1、ModuleDescriptor.h
 
@@ -275,7 +275,7 @@ public class MyEditorTarget : TargetRules
 
 ## 创建新项目的初始工作
 
-首先代开虚幻引擎，新建空白C++项目，关闭LiveCoding、HotReload。如果需要的话，可以在偏好设置里面将窗口生成位置设置为主窗口，这样新窗口就不会单开了。
+首先代开虚幻引擎，新建空白C++项目，关闭LiveCoding、HotReload（热重载）。如果需要的话，可以在偏好设置里面将窗口生成位置设置为主窗口，这样新窗口就不会单开了。
 
 ![image-20250421151908450](UnrealEngineC++.assets/image-20250421151908450.png)
 
@@ -293,7 +293,7 @@ PublicIncludePaths.AddRange(
 );
 ```
 
-添加此代码之后，我们新建的UEC++类等代码中`#include`其它文件包内的其它文件时，就不会出现`Cannot Open Source File…`的提示以及编译不通过了。
+添加此代码之后，我们新建的UEC++类等代码中`#include`其它文件夹内的文件时，就不会出现`Cannot Open Source File…`的提示以及编译不通过了。
 
 ## 代码的创建和编写
 
@@ -313,7 +313,7 @@ PublicIncludePaths.AddRange(
 
    ​	通常我们创建在项目里面的代码文件不需要把头文件和源文件分开放,而创建到插件中的代码文件需要。
 
-   ​	为了避免#include”../../../../***.h”这种极其难看且冗余的包含路径,我们可以在build.cs里面进行配置包含路径来避免这个问题!此处暂略。
+   ​	为了避免#include”../../../../***.h”这种极其难看且冗余的包含路径,我们可以在build.cs里面进行配置包含路径来避免这个问题!此处详见上一节内容。
 
 2. 第二种：
 
@@ -329,7 +329,7 @@ PublicIncludePaths.AddRange(
 
    ​	之后根据提示选择新建的类名等选项即可。
 
-   ​	如果你创建错位置了。直接去删掉资源管理器中的文件然后刷新项目即可,不要在VS中删除，即不要再上图所示页面删除或移动文件的位置，这里移动的位置在资源管理器中并不生效，只是单纯的有这么个效果，因此我们需要直接去资源管理器中最直观的删除或移动文件，之后使用`.uproject`生成一下，刷新我们的项目即可。
+   ​	如果你创建错位置了。直接去删掉资源管理器中的文件然后刷新项目即可,不要在VS中删除，即：不要在上图所示页面删除或移动文件的位置，这里移动的位置在资源管理器中并不生效，只是单纯的有这么个效果，因此我们需要直接去资源管理器中最直观的删除或移动文件，之后使用`.uproject`生成一下，刷新我们的项目即可。
 
 **头文件**
 
@@ -349,7 +349,7 @@ PublicIncludePaths.AddRange(
 
 我们可以使用原生的C++类实现功能,这点毫无疑问.但是一旦涉及到了引擎功能,我们必须使用虚幻引擎的宏进行标记改造,方可支持被引擎感知使用.
 
-**注意:一旦该头文件包含了以下反射宏信息,其头文件必须在文件首部`include`的最后一行,写入`[#include “文件名.generated.h”]`,该文件是虚幻UBT帮我们生成的反射文件.有很多很重要的内容.同时如果,需要包含带反射的结构体,请不要前向声明,直接包含该结构体的头文件即可.**
+**注意:一旦该头文件包含了以下反射宏信息,其头文件必须在文件首部`include`的最后一行,写入`[#include "文件名.generated.h"]`,该文件是虚幻UBT帮我们生成的反射文件.有很多很重要的内容.同时如果需要包含带反射的结构体,请不要前向声明,直接包含该结构体的头文件即可.**
 
 **常见的宏如下:**
 
@@ -359,7 +359,7 @@ PublicIncludePaths.AddRange(
 
 `USTRUCT()`:标记结构体反射到引擎,与`GENERATED_BODY()`,也可以使用`GENERATED_USTRUCT_BODY()`.
 
-`UINTERFACE()`:标记接口反射到引擎,与`GENERATED_UINTERFACE_BODY()`连用,需要同时申明一个U类和一个I类,其中接口写在I类.
+`UINTERFACE()`:标记接口反射到引擎,与`GENERATED_UINTERFACE_BODY()`连用,需要同时声明一个U类和一个I类,其中接口写在I类.
 
 `UPROPERTY()`:标记变量反射到引擎,可以在类和结构体体中使用.
 
@@ -427,7 +427,7 @@ UClass* CharacterClass = ...; // 根据玩家选择获取相应的 UClass
 if (CharacterClass)
 {
     ACharacter* NewCharacter = GetWorld()->SpawnActor<ACharacter>(CharacterClass);
-    //或者写为,SomeActor可以是某个继承自AActor的类
+    //或者写为SomeActor,SomeActor可以是某个继承自AActor的类
     ACharacter* NewCharacter = GetWorld()->SpawnActor<ACharacter>(SomeActor::StaticClass());
 }
 
@@ -871,7 +871,7 @@ struct FMyStruct
 
 ### Make和Break函数
 
-虚幻引擎可以自动为结构体创建Make和Break函数。
+虚幻引擎可以**自动为结构体创建Make和Break函数**。
 
 1. Make函数出现在任何带有 `BlueprintType` 标签的 `Ustruct` 中。
 2. 如果在UStruct中至少有一个 `BlueprintReadOnly` 或 `BlueprintReadWrite` 属性，Break函数就会出现。
@@ -949,7 +949,7 @@ class UClassName : public UInterface //重点看这里
 
 ​	**上面代码表明了我们应该怎样声明一个接口，且该接口应该继承自`UInterface`而不是`UObject`**。
 
-​	UINTERFACE类不是实际的接口；**它是一个空白类**，它的存在只是为了向虚幻引擎反射系统确保可见性。将由其他类继承的实际接口必须具有相同的类名，但是开头字母"U"必须改为"I"。
+​	`UINTERFACE`类不是实际的接口；**它是一个空白类**，它的存在只是为了向虚幻引擎反射系统确保可见性。然而被其他类继承使用的实际接口必须具有相同的类名，但是开头字母"U"必须改为"I"。
 
 ```cpp
 #pragma once
@@ -967,11 +967,11 @@ class IReactToTriggerInterface //重点看这里
 	GENERATED_BODY()
  
 public:
-	/** 在此处添加接口函数声明 **/
+	/** 在此处添加接口的各种函数声明 **/
 };
 ```
 
-​	上面的文字和代码就是说，代码中`UReactToTriggerInterface`**这个类里面不要写我们的业务代码**，它应该保持是一个空白类，**它的存在只是为了向虚幻引擎反射系统确保可见性**。`IReactToTriggerInterface`**这个类则是写业务代码的地方**，可以看到二者的区别是开头的字母不一样，**一个是`U`，一个是`I`**。同时，当我们使用其它类实现该接口的函数时，它们继承的接口类也是`IReactToTriggerInterface`。
+​	上面的文字和代码就是说，代码中`UReactToTriggerInterface`**这个类里面不要写我们的业务代码**，它应该保持是一个空白类，**它的存在只是为了向虚幻引擎反射系统确保可见性**。`IReactToTriggerInterface`**这个类则是写业务代码的地方**，可以看到二者的区别是开头的字母不一样，**一个是`U`，一个是`I`**。同时，当我们使用其它类实现该接口的函数时，它们继承的接口类也应该是`IReactToTriggerInterface`。
 
 ### 常用参数示例解析
 
