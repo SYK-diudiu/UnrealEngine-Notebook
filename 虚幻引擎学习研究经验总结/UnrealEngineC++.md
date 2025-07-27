@@ -2521,7 +2521,7 @@ void ADynamicDelegateActor::ExecuteMyDynamicMultiDelegate(FString str)
 
 ![image-20250306201349336](UnrealEngineC++.assets/image-20250306201349336.png)
 
-​	点击图片考上部分显示的那个`Add`按钮，之后你会看到下图所示内容。
+​	点击图片靠上部分显示的那个`Add`按钮，之后你会看到下图所示内容。
 
 ![image-20250306201459231](UnrealEngineC++.assets/image-20250306201459231.png)
 
@@ -2777,7 +2777,7 @@ void ATagActor::BeginPlay()
 
 ​	这里大致就是说了两个事，实现`IGameplayTagAssetInterface`接口，重载`GetOwnedGameplayTags`函数，从而简化我们对标签的访问过程。
 
-​	也就是说我们在某个类中实现`GetOwnedGameplayTags`这个函数之后呢，当我们想要获取该类的所有标签时，直接调用该类的这个函数即可获得到该类的一个标签容器，容器中包括了类当前所拥有的所有标签。
+​	**也就是说我们在某个类中实现`GetOwnedGameplayTags`这个函数之后呢，当我们想要获取该类的所有标签时，直接调用该类的这个函数即可获得到该类的一个标签容器，容器中包括了该类当前所拥有的所有标签。**
 
 ​	实现`IGameplayTagAssetInterface`接口，需要包含头文件`"GameplayTagAssetInterface.h"`。
 
@@ -3128,7 +3128,7 @@ void ALogActor::Tick(float DeltaTime)
 
 ### 基础知识
 
-​	看过文档之后，那我们以`GameInstance`为例，它的子系统就是GameInstanceSubsystem，它们分别是什么，它们之间又有怎样的关系？
+​	看过文档之后，那我们以`GameInstance`为例，它的子系统就是**GameInstanceSubsystem**，它们分别是什么，它们之间又有怎样的关系？
 
 `GameInstance`
 
@@ -3140,8 +3140,8 @@ void ALogActor::Tick(float DeltaTime)
 
 `GameInstanceSubsystem`
 
-- `GameInstanceSubsystem` 是一种子系统，它被设计用来将特定的功能模块化和封装化。每个子系统专注于实现一项特定的功能，比如管理游戏中的成就系统、处理特定的网络协议等。
-- 是对 `GameInstance` 功能的进一步细化和拆分，目的是让代码结构更加清晰，提高可维护性和可扩展性。
+- `GameInstanceSubsystem` 是一种子系统，**它被设计用来将特定的功能模块化和封装化**。每个子系统专注于实现一项特定的功能，比如管理游戏中的成就系统、处理特定的网络协议等。
+- 是对 `GameInstance` 功能的进一步细化和拆分，目的是让代码结构更加清晰，提高可维护性和可扩展性。说的通俗一点，就是使用子系统`GameInstanceSubsystem` 来分担主系统`GameInstance`的职能，就像一个类需要有多个成员函数来实现不同功能一样。
 - **功能模块化**：每个 `GameInstanceSubsystem` 专注于一个特定的功能领域，使得不同功能之间的代码分离，便于开发和维护。例如，一个 `GameInstanceSubsystem` 可以专门负责管理游戏内的排行榜系统，另一个可以负责处理广告展示。
 - **可插拔性**：子系统可以根据需要动态地启用或禁用，而不会影响其他部分的功能。这使得游戏可以根据不同的平台、版本或用户需求灵活地调整功能。
 
