@@ -2061,7 +2061,7 @@ void AMultiDelegateActor::BeginPlay()
 
 ​	绑定部分我们通常写在BeginPlay函数中，与单播委托绑定不同的是，多播委托的绑定使用的是Add开头的一些函数，而不是Bind。
 
-​	这里我们使用`AddUObject`函数，第一个参数传递绑定函数所在的类的指针，第二个参数传递绑定函数的地址，注意不要缺少`&`符号。
+​	这里我们使用`AddUObject`函数，第一个参数传递**被绑定函数所在类**的指针，第二个参数传递**被绑定函数的地址**，注意不要缺少`&`符号。
 
 ​	我们绑定了两个函数（具体函数定义请看本文开头的代码公示），它们的作用就是接收一个字符串并打印黄或红色的字符串。
 
@@ -2079,7 +2079,7 @@ void AMultiDelegateActor::ExecuteMyDelegate(FString str)
 }
 ```
 
-​	这里我们通过`Broadcast`函数来执行委托，不再是`Execut`了。与此同时，由于我们定义的是带有一个参数（FString）的多播委托，这里我们需要传递FString类型的参数。传递给`Broadcast`函数的这个str，就会被绑定的函数接收到，即`PrintYellowString`和`PrintRedString`就会获得到str的数据，再将它们打印到游戏屏幕上。
+​	这里我们通过`Broadcast`函数来执行委托，不再是`Execut`了。与此同时，由于我们定义的是带有一个参数（FString）的多播委托，这里我们需要传递FString类型的参数。传递给`Broadcast`函数的这个字符串变量`str`，就会被绑定的函数接收到，即`PrintYellowString`和`PrintRedString`就会获得到`str`的数据，再将它们打印到游戏屏幕上。
 
 #### 运行结果
 
@@ -2091,7 +2091,9 @@ void AMultiDelegateActor::ExecuteMyDelegate(FString str)
 
 ![image-20250302202819417](UnrealEngineC++.assets/image-20250302202819417.png)
 
-​	这里我们给Str字符串随意写一些文字，我写的是`I love Unreal Engine C++`。
+​	其中`Execute My Delegate`节点是我们类中暴露出来的用于执行委托的函数。	
+
+​	这里我们给`Str`字符串随意写一些文字，我写的是`I love Unreal Engine C++`。
 
 ​	OK，运行并进入游戏，按下键盘上的数字键`2`，即可看到下图所示的输出信息（这里我多按了几次，方便观看）。
 
