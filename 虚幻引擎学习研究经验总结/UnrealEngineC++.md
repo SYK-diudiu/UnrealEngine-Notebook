@@ -1775,6 +1775,12 @@ void UnPauseTimer(FTimerHandle& InOutHandle);
 
 ### 使用场景
 
+```cpp
+FTimerManager& ThisTimeManager = GetWorldTimerManager();
+
+ThisTimeManager.SetTimer(MyTimerHandle, this, &ATimerActor::RepeatingFunction, 1.0f, true, 2.0f);
+```
+
 - 游戏逻辑控制
   - **技能冷却**：在游戏中，角色的技能通常有冷却时间。可以使用一次性定时器来实现技能冷却，当技能释放后，启动一个定时器，在冷却时间结束后允许再次使用该技能。
   - **怪物刷新**：使用周期性定时器，按照一定的时间间隔刷新游戏中的怪物，增加游戏的动态性。
@@ -2328,7 +2334,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FDynamicMultiDelegate , FString , In
 
 ​	与动态单播不同的是，我们的动态多播委托只写了一个执行函数，那么其它的函数在哪里？我们要怎样绑定？又要怎样解绑？
 
-​	别担心，引擎已经为我们准备了这些函数，再**蓝图讲解**部分将会为大家展开介绍。
+​	引擎为我们准备了这些函数，再**蓝图讲解**部分将会为大家展开介绍。
 
 ```cpp
 void ADynamicDelegateActor::ExecuteMyDynamicMultiDelegate(FString str)
@@ -2348,7 +2354,7 @@ void ADynamicDelegateActor::ExecuteMyDynamicMultiDelegate(FString str)
 
 ​	有了动态单播委托的经验，相信大家可以一眼看出绑定函数怎么使用了，我就不再赘述。其中右上角的执行函数就是我们自己写的那个带有`Broadcast`的函数。
 
-​	图中下方的两个节点功能都是解绑委托，左边的节点一次可以解绑一个事件，即我们将被绑定过的事件连接到它的事件引脚上，之后当游戏执行到此节点时，就会接触所连接事件与委托的绑定了。而右边的节点则是全部解绑。
+​	图中下方的两个节点功能都是解绑委托，左边的节点一次可以解绑一个事件，即我们将被绑定过的事件连接到它的事件引脚上，之后当游戏执行到此节点时，就会解除所连接事件与委托的绑定了。而右边的节点则是全部解绑。
 
 ![image-20250303230111418](UnrealEngineC++.assets/image-20250303230111418.png)
 
@@ -2459,7 +2465,7 @@ void ADynamicDelegateActor::ExecuteMyDynamicMultiDelegate(FString str)
 
 ​	暂时用不到下面两栏的内容，我们只看`GameplayTags`。
 
-​	想要在项目中添加标签，我们首先需要启用 **从配置导入标签（Import Tags From Config）** 也就是第一行的选项，默认就是启用状态，所以不用动，如果没有启用就启用一下（作者真啰嗦）。这会导入 `.ini` 文件中的所有Gameplay标签，包括 `Config/DefaultGameplayTags.ini` 以及 `Config/Tags` 中的所有标签。那么如果我们在编辑器打开时启用该选项的状态下，手动修改或者删除了上述`.ini`文件的话，编辑器一般是不能立刻检测到的，这时我们就需要关掉该选项，关掉之后再点开即可解决问题。
+​	想要在项目中添加标签，我们首先需要启用 **从配置导入标签（Import Tags From Config）** 也就是第一行的选项，默认就是启用状态。这会导入 `.ini` 文件中的所有Gameplay标签，包括 `Config/DefaultGameplayTags.ini` 以及 `Config/Tags` 中的所有标签。那么如果我们在编辑器打开时启用该选项的状态下，手动修改或者删除了上述`.ini`文件的话，编辑器一般是不能立刻检测到的，这时我们就需要关掉该选项，关掉之后再点开即可解决问题。
 
 ​	除了`DefaultGameplayTags.ini` 这个默认文件之外，如果需要将标签的定义存入我们想要存入的`.ini`文件，就需要点击 **添加新Gameplay标签源（Add new Gameplay Tag source）** 按钮，在 `Config/Tags` 中创建新的源 `.ini` 文件来存储Gameplay标签。为项目的各个方面创建单独的源文件，可能对于大型项目的组织和协作很有用。
 
@@ -2475,7 +2481,7 @@ void ADynamicDelegateActor::ExecuteMyDynamicMultiDelegate(FString str)
 
 ​	与添加之前并无两样，这就是我们需要注意的点，你会觉得可能是没有创建成功，然后反复点了很多次，添加了无数次，都一无所获，因为我们单单点击那个按钮还不能让虚幻编辑器为我们生成这个文件。
 
-​	当我们点击过一次`Add New Source`按钮之后，关掉该窗口，点击**Gameplay标签列表（Gameplay Tag List）** 条目旁边的 **管理Gameplay标签（Manage Gameplay Tags）** 按钮。这会打开 **Gameplay标签管理器（Gameplay Tag Manager）** 窗口。在 **Gameplay标签管理器（Gameplay Tag Manager）** 窗口中，点击左上角的 **添加（Add (+)）** 按钮。输入所需的 **名称（Name）** 、 **注释（Comment）**和 **源（Source）**，其中**注释（Comment）**可以为空不写。
+​	当我们点击过一次`Add New Source`按钮之后，关掉该窗口，点击**Gameplay标签列表（Gameplay Tag List）** 条目旁边的 **管理Gameplay标签（Manage Gameplay Tags）** 按钮。这会打开 **Gameplay标签管理器（Gameplay Tag Manager）** 窗口。在 **Gameplay标签管理器（Gameplay Tag Manager）** 窗口中，点击左上角的 **添加（Add (+)）** 按钮。输入所需的 **名称（Name）** 、 **注释（Comment）**和 **源（Source）**，其中**名称（Name）**就是根据个人需要自定义的Tag名称，**注释（Comment）**可以为空不写。
 
 ![image-20250306194506020](UnrealEngineC++.assets/image-20250306194506020.png)
 
@@ -2487,7 +2493,7 @@ void ADynamicDelegateActor::ExecuteMyDynamicMultiDelegate(FString str)
 
 ![image-20250306195027777](UnrealEngineC++.assets/image-20250306195027777.png)
 
-​	**总结**，点击`Add New Source`按钮之后，如果我们没有为该源添加至少一个标签，那么虚幻编辑器将不会新建我们定义的这个`.ini`文件。
+​	**总结**，点击`Add New Source`按钮之后，如果我们**没有为该源添加至少一个标签**，那么虚幻编辑器将不会新建我们定义的这个`.ini`文件。
 
 ​	我们可以在**Gameplay标签管理器（Gameplay Tag Manager）** 窗口，看到各个标签分别属于哪些文件，如下图所示。
 
