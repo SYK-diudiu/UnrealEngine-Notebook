@@ -3391,8 +3391,8 @@ ServerURL=http://localhost
 
 📌 **获取当前的 `UDeveloperSettings` 实例**
 
-```
-cpp复制编辑UMySettings* Settings = GetMutableDefault<UMySettings>();
+```cpp
+UMySettings* Settings = GetMutableDefault<UMySettings>();
 if (Settings)
 {
     UE_LOG(LogTemp, Log, TEXT("ApiKey: %s"), *Settings->ApiKey);
@@ -4427,7 +4427,7 @@ void ASmartPtrActor::TestSharedRef_04()
 
 #### 弱指针
 
-关于弱指针部分的内容，我需要强调一点的是：我们尽量不要使用`if(WeakPtr.IsValid())`这种代码，存在一些弊端，以下从多线程问题、时效性问题。我在`TestWeakPtr_03()`中有使用到该函数。前两个函数主要是为大家介绍循环引用的例子以及如何打破循环引用。
+关于弱指针部分的内容，我需要强调一点的是：我们尽量不要使用`if(WeakPtr.IsValid())`这种代码，存在一些弊端。我在`TestWeakPtr_03()`中有使用到该函数。前两个函数主要是为大家介绍循环引用的例子以及如何打破循环引用。
 
 ```cpp
 //SamrtPtrActor.h
@@ -4667,7 +4667,7 @@ MyWeakPtr.Pin()->DoSomething();
     if (TempPtr.IsValid()) {
         TempPtr->DoSomething();                    // 操作对象
     }
-} // TempPtr 在此处销毁，引用计数-1
+} // 注意这里是一个单独的代码块{}，因此TempPtr会在该代码块结束后销毁，引用计数-1
 ```
 
 ##### **引用计数的变化**
@@ -4718,7 +4718,7 @@ if (PinnedPtr.IsValid()) {
 ##### **优势**
 - **引用计数稳定**：临时共享指针的生命周期被显式延长到局部变量作用域内，确保对象在操作期间不会被释放。
 - **性能优化**：只需一次 `Pin()` 调用，避免重复检查。
-- **线程安全**：在单次 `Pin()` 后操作对象时，即使其他线程释放对象，局部共享指针仍会保持对象存活。
+- **线程安全**：在单次 `Pin()` 后操作对象时，即使其他线程释放对象，局部共享指针仍会保持对象存活**（关键就是靠那个临时的共享指针）**。
 
 ---
 
