@@ -4886,6 +4886,7 @@ FRunnableThread* ThreadIns = FRunnableThread::Create(Task, *ThreadName);
 #pragma once
 
 #include "CoreMinimal.h"
+//不要忘记下面两个头文件的引用
 #include "HAL/Runnable.h"
 #include "HAL/RunnableThread.h"
 
@@ -5044,7 +5045,7 @@ void FSimpleRunnable::Stop()
 	/*
 	*外部调用该函数之后，bRun被设置为false，
 	*因此在新线程中Run()函数里的while循环检测到bRun为false，结束循环
-	*之后Run()函数执行完毕，Exit()函数开始做守卫工作
+	*之后Run()函数执行完毕，Exit()函数开始做收尾工作
 	*/
 	bRun = false;
 	UE_LOG(LogTemp, Warning, TEXT("Thread Stop!"));
@@ -5090,7 +5091,7 @@ ThreadIns->Suspend(false);
 
 这种方法可能麻烦一些，但是毕竟我花功夫学了一点，所以也分享给大家。
 
-我们使用虚幻引擎中的`FEventRef`类为大家实现在`FRunnable`的派生类中**挂起**和**唤醒**两个功能。`FEventRef` 是虚幻引擎提供的RAII（资源获取即初始化）封装类，**自动管理事件对象的生命周期**，无需手动释放资源。
+我们使用虚幻引擎中的`FEventRef`类实现在`FRunnable`的派生类中**挂起**和**唤醒**两个功能。`FEventRef` 是虚幻引擎提供的RAII（资源获取即初始化）封装类，**自动管理事件对象的生命周期**，无需手动释放资源。
 
 概念什么的在学会使用之前很多时候是看不懂的，因此我不多说废话，要使用`FEventRef`实现线程的**挂起**和**唤醒**功能我们需要学习下面的代码：（使用`FEventRef`需要包含头文件：`#include "HAL/Event.h"`）
 
@@ -5104,8 +5105,8 @@ FEventRef MyAutoResetEvent(EEventMode::AutoReset);
 FEventRef MyManualResetEvent(EEventMode::ManualReset);
 
 //在我的代码中做出了一些写法上的改变，但是逻辑是一样的
-FEventRef* MyManualResetEvent; //写在头文件中
-MyManualResetEvent = new FEventRef(EEventMode::AutoReset); //源文件构造函数中
+FEventRef* MyManualResetEvent; //写在头文件类定义中
+MyManualResetEvent = new FEventRef(EEventMode::AutoReset); //写在源文件构造函数中
 
 //如果我们想要让一个线程进入等待状态，或者说挂起线程，那么我们可以使用下面这个函数
 MyManualResetEvent->Get()->Wait(); //程序执行到此代码处就会停在这里，等待我们执行唤醒操作
@@ -5113,7 +5114,7 @@ MyManualResetEvent->Get()->Wait(); //程序执行到此代码处就会停在这�
 *因为Wait()函数在FEvent类中，而不在FEventRef类中，
 *因此我们使用引擎设计好的Get()函数先获得到FEventRef对象中封装的FEvent
 *之后链式编程，继续使用FEvent调用它的Wait()函数，实现挂起操作。
-*具体代码写在哪里我后面会为大家呈现出来的
+*这一行代码具体写在哪里我后面会为大家呈现出来的
 */
 
 //有了挂起之后当然还需要一个唤醒操作
@@ -5392,7 +5393,7 @@ public: //这些是我们编写子系统时需要重写的一些函数，以前�
 
 public: //输出日志信息
 	/*
-	*这时我自己封装的一个用于输出日志信息的函数，
+	*这是我自己封装的一个用于输出日志信息的函数，
 	*接收一个字符串并将该字符串输出到日志信息中。
 	*仅仅是因为这样写这方便一些，不用写UE_LOG()了，
 	*大家可以照抄，不必深究细节。
@@ -5452,7 +5453,7 @@ void USYKThreadGameInsSubsystem::InitialEventRunnableThread()
 	if (EventRunnableUniquePtr == nullptr)
 	{
 		PrintLog(TEXT("InitialEventRunnableThread已触发"));
-        //这里我设计了一个比较特别的线程名字，为大家的阅读增添一些乐趣
+        
 		EventRunnableUniquePtr = MakeUnique<FEventRunnable>(TEXT("|超级无敌暴龙战士|"));
 	}
 	else
@@ -5530,7 +5531,7 @@ OK，接下来我们将使用这个子系统在关卡蓝图中分别使用这四
 
 ### `Async()`和`AsyncTask()`
 
-前面我已经讲过关于`FRunnable`类的基本用法，大致就是继承这个类，重写一些函数，生命一些变量，调用一些功能等操作。那如果有时候我就是很懒，我不想新建什么类，不想重写那么多函数，我就单纯的想让一段代码在主线程之外执行，我应该怎么办呢？通常我会使用`AsyncTask()`和`Async()`。
+前面我已经讲过关于`FRunnable`类的基本用法，大致就是继承这个类，重写一些函数，声明一些变量，调用一些功能等操作。那如果有时候我就是很懒，我不想新建什么类，不想重写那么多函数，我就单纯的想让一段代码在主线程之外执行，我应该怎么办呢？通常我会使用`AsyncTask()`和`Async()`。
 
 下面我会分别为大家介绍`AsyncTask()`和`Async()`，同时以一个较为复杂的使用案例来让大家对`AsyncTask()`和`Async()`有一个更深刻的体会。
 
@@ -5540,7 +5541,7 @@ OK，接下来我们将使用这个子系统在关卡蓝图中分别使用这四
 
 `Async()`和`AsyncTask()`中的“Async”就是英语单词“Asynchronous”意思就是：异步。异步编程的核心在于让程序在执行某个任务时，不需要等待该任务完成就可以继续执行后续的代码，从而提高程序的响应性和效率。`AsyncTask()`和`Async()`都具备这样的特性。
 
-多线程和异步是两个不同的概念，多线程是实现异步的一种常用方式，有些时候通过异步 IO、单线程事件循环和回调函数也可以实现异步，无需多线程，因此不是所有的异步都是多线程操作，其实不应该在多线程这里说异步的东西，会迷惑他人。虚幻引擎给我们提供的这两个宏虽然名字很“异步”，但是它们是通过多线程来实现的异步操作，即本质上还是与多线程有关。使用的时候大家就会对此有所感受。
+多线程和异步是两个不同的概念，多线程是实现异步的一种常用方式，有些时候通过异步 IO、单线程事件循环和回调函数也可以实现异步，无需多线程，因此不是所有的异步都是多线程操作，其实不应该在多线程这里说异步的东西，会迷惑他人。虽然它们的名字很“异步”，但是它们是通过多线程来实现的异步操作，即本质上还是与多线程有关。使用的时候大家就会对此有所感受。
 
 下面我就分别介绍一下`Async()`和`AsyncTask()`的基本用法，通过使用这两个函数，我们可以较为简便的让代码在主线程之外执行，降低阻塞主线程的可能性。
 
@@ -5579,7 +5580,7 @@ void TestAsyncTask()
 
 /*
 *注意信息先后顺序的差别，中间有大概3秒的间隔，出现第一条语句的时候需要耐心等待一段时间
-*思考为什么先输出的"主线程没有停止，继续执行"，而不是"AsyncTask执行完毕"
+*思考为什么先输出的"主线程没有停止，继续执行"，而不是"AsyncTask执行完毕"？
 */
 ```
 
@@ -5730,7 +5731,7 @@ enum class EAsyncExecution
 
 那我们的例子中的代码就是使用的`EAsyncExecution::Thread`，任务会在一个新的线程中执行。适合执行一些耗时较长且独立的任务，比如复杂的计算任务、长时间的文件读写操作等。因为这些任务如果在主线程中执行会导致主线程阻塞，影响程序的响应性能，然后你的游戏就丸辣。
 
-#### `TFuture`（写文章时提升一个标题等级）
+#### `TFuture`
 
 在展示综合案例之前我想向大家再介绍一个模板类`TFuture`，最后的使用案例中有用到，其实说到`TFuture`的话，应该是先介绍一个叫`TPromise`的模板类，二者一起使用应该是比较规范的，但是我后面的代码中没用到`TPromise`，也能实现我想要的效果，所以在这里我不会说太多关于`TPromise`的内容，大家可以自行探索。
 
@@ -5750,16 +5751,16 @@ int32 num = result.Get()
 *在结果准备好之前，Get()函数会阻塞当前线程
 *比如说我的Async()执行了很久都没有执行到return语句，
 *但是在外界，程序早早地就走到了result.Get()的部分，
-*那么result就会迟迟接收不到这个123,
+*那么result就会迟迟接收不到这个123，
 *外界的这个线程就阻塞在result.Get()这里了，后面的代码都要等着
 *等到Async()里面忙活完了，走到return 123;了
-*这时我们的result.Get()就可以成功“get”到这个值了
+*这时我们的result.Get()就可以成功“get”到这个值了，代码继续向后执行
 */
 ```
 
 我下面的案例中就会使用到上面代码的这么一个逻辑，只不过更复杂一些，在这里提前将一部分，大家一会儿看代码的时候不会一头雾水。
 
-#### 综合使用案例（写文章时提升一个标题等级）
+#### 综合使用案例
 
 OK终于到了有点意思的部分了，下面我会展示一个自定义函数中的代码，其中会涉及到`AsynTask()`、`Async()`、`TFuture`以及一些前面的知识，有点综合的感觉了，我写了详细的注释解析，希望大家可以理解。
 
@@ -5776,7 +5777,7 @@ void USYKThreadGameInsSubsystem::GetAsynFuture()
 		//创建了一个TFuture数组，其中每个TFuture中存放的是int32类型的数据
 		TArray<TFuture<int32>>  FutureResults;
 
-		//使用一个for循环，我们要在异步任务中再次创建100线程的异步任务
+		//使用一个for循环，我们要在异步任务中再次创建100个线程的异步任务
 		for (size_t i = 0; i < 100; i++)
 		{
 			//TArray的内置函数，用于向数组中添加一个默认构造的元素
@@ -5845,7 +5846,7 @@ void USYKThreadGameInsSubsystem::GetAsynFuture()
 		}
 		//此for循环结束之后，意味着刚才使用Async()创建的所有的新线程都必定创建并执行完毕
 
-		//100% 呼叫主线程执行后续操作
+		//100%，之后可以呼叫主线程等执行后续操作
 		PrintWarning(TEXT("所有任务执行完毕"));
 
 		});
@@ -6132,6 +6133,8 @@ LogTemp: Warning: ThreadLog:[所有任务执行完毕]
 可以看到日志信息中确实执行了0~99总共100个任务，并且输出了`TFuture<int32>`中的返回值。
 
 ### `GraphEvent`
+
+暂略
 
 ### `Task Graph` 
 
