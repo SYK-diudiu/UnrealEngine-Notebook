@@ -1007,11 +1007,137 @@ void UMyAttributeSet::OnHealthUpdated(float NewValue)
 
 通过选择堆栈类型，可以灵活实现 “按来源独立叠加” 或 “全来源共同叠加” 的效果，满足不同的游戏设计需求（如区分敌人 debuff、团队共享 buff 等）。
 
-### 4.5.6
+### 4.5.6 授予Ability
 
-### 4.5.7
+### 4.5.7 GameplayEffect标签
 
-### 4.5.8
+**对文中本节内容的解释**：
+
+`GameplayEffect`（GE）中的这些`GameplayTagContainer`（标签容器）是 GE 与其他系统（如技能、状态、交互逻辑）通信的 “语言”，不同类别的标签容器承担着不同的功能，核心是通过 “标签” 控制 GE 的应用条件、状态维持、效果联动等。
+
+#### 先理解基础概念：`Added`和`Removed`标签
+
+GE 可以继承父类 GE 的标签配置，`Added`标签是当前 GE“新增的、父类没有的标签”；`Removed`标签是 “父类有但当前 GE 去掉的标签”。最终生效的是`Combined GameplayTagContainer`（合并后的标签容器），即父类标签减去 Removed 标签，再加上 Added 标签，确保标签继承的正确性。
+
+#### 各分类标签容器的具体作用：
+
+##### 1. `Gameplay Effect Asset Tags`（GE 资源标签）
+
+**核心作用：给 GE 本身打 “描述性标签”，无实际功能，仅用于分类和识别**。
+
+- 这些标签属于 GE 自身（类似 “标签属性”），不会影响游戏逻辑，仅用于开发者筛选、查询或编辑器内的分类。
+- 举例：给所有 “回血类 GE” 打上`"Type.Heal"`标签，所有 “中毒类 GE” 打上`"Type.Poison"`标签，方便在编辑器中按类型搜索 GE 资源。
+
+##### 2. `Granted Tags`（授予标签）
+
+**核心作用：当 GE 应用到目标时，自动给目标的`ASC`添加这些标签；当 GE 被移除时，自动移除这些标签**。
+
+- 仅对**持续（Duration）** 或**无限（Infinite）** GE 有效（瞬时 GE 应用后立即消失，无需授予标签）。
+- 这些标签是目标 “当前状态” 的标识，其他系统可通过检测这些标签判断目标状态。
+- 举例：
+  一个 “燃烧” GE 的`Granted Tags`设为`"Status.Burning"`。当 GE 应用到敌人时，敌人的 ASC 会添加`"Status.Burning"`标签（其他技能 / 逻辑可检测该标签，比如 “对燃烧目标造成额外伤害”）；当燃烧 GE 结束，该标签会自动从敌人 ASC 中移除。
+
+##### 3. `Ongoing Tag Requirements`（持续标签需求）
+
+**核心作用：GE 应用后，需要目标持续满足这些标签条件才能 “激活运行”；不满足则暂时关闭，满足后重新激活**。
+
+- 仅对**持续 / 无限 GE**有效。GE 不会被移除，只是暂时不执行其功能（如停止属性修改、暂停周期性效果）。
+- 举例：
+  一个 “潜行” GE 的`Ongoing Tag Requirements`设为`"Status.NotDetected"`（未被发现）。当目标被敌人发现（失去`"Status.NotDetected"`标签），潜行 GE 会关闭（隐身效果消失、不再获得潜行加成）；当目标重新隐藏（恢复标签），GE 会重新激活（隐身和加成恢复）。
+
+##### 4. `Application Tag Requirements`（应用标签需求）
+
+**核心作用：GE 能否应用到目标的 “前置条件”—— 目标必须拥有这些标签，否则 GE 无法应用**。
+
+- 这是 GE 应用的 “门槛”，在应用前检查目标的标签，不满足则直接失败。
+- 举例：
+  一个 “对机械敌人生效” 的 GE，`Application Tag Requirements`设为`"Enemy.Type.Mechanical"`。当尝试将其应用到非机械敌人（无该标签）时，GE 会应用失败；只有目标是机械敌人（有标签）时，才能成功应用。
+
+##### 5. `Remove Gameplay Effects with Tags`（移除带特定标签的 GE）
+
+**核心作用：当前 GE 成功应用到目标后，会自动移除目标身上所有 “带有指定标签” 的其他 GE**。
+
+- 用于 “效果冲突” 或 “净化” 场景，比如 “驱散 debuff”“新 buff 覆盖旧 buff”。
+- 举例：
+  一个 “净化” GE 的`Remove Gameplay Effects with Tags`设为`"Status.Poison"`（中毒标签）。当该 GE 应用到目标后，会自动移除目标身上所有 “Asset Tags 或 Granted Tags 包含`"Status.Poison"`” 的 GE（比如各种中毒效果）。
+
+#### 总结：
+
+这些标签容器是 GE 与游戏世界交互的 “规则引擎”：
+
+- `Asset Tags`：描述 GE 自身，方便管理；
+- `Granted Tags`：给目标打状态标签，供其他系统识别；
+- `Ongoing Tag Requirements`：控制 GE 应用后的激活状态；
+- `Application Tag Requirements`：限制 GE 的应用目标；
+- `Remove...Tags`：让 GE 应用后清理冲突效果。
+
+通过组合这些标签容器，能灵活实现复杂的效果逻辑（如 “只对特定敌人生效，应用后给目标上状态，状态存续依赖条件，且能驱散旧效果”）。
+
+### 4.5.8 免疫
+
+`GameplayEffect`的这种 “基于 GameplayTag 的免疫机制”，核心是让目标（拥有免疫的一方）能够**主动阻止特定来源或特定类型的 GameplayEffect（GE）应用**，并且在阻止时能触发回调（委托），比单纯用`Application Tag Requirements`（被动检查条件）更灵活，还能提供反馈。
+
+#### 通俗理解核心作用：
+
+想象游戏中 “玩家获得了‘免疫中毒’状态”，此时所有 “中毒类 GE” 都无法应用到玩家身上，且系统会通知 “中毒被免疫了”（比如播放免疫特效）。这种 “主动挡掉特定 GE + 触发反馈” 的机制，就是这里要讲的免疫系统。
+
+#### 两种具体免疫方式的区别：
+
+##### 1. `GrantedApplicationImmunityTags`（基于源标签的免疫）
+
+**核心逻辑：通过 “源对象的标签” 来免疫其所有 GE**。
+
+- 目标（被免疫方）的
+
+  ```
+  ASC
+  ```
+
+  中如果有
+
+  ```
+  GrantedApplicationImmunityTags
+  ```
+
+  ，就会检查 “要应用 GE 的源对象（如释放技能的敌人、物品等）” 的标签：
+
+  - 源对象的`ASC`标签，或源对象使用的`Ability`的标签（如果有），只要包含`GrantedApplicationImmunityTags`中的任何标签，那么这个源对象的所有 GE 都无法应用到目标身上。
+
+- 这是一种 “大范围免疫”：一旦源对象带有被免疫的标签，其所有 GE 都会被目标挡掉，无需逐个检查 GE 本身。
+
+**举例**：
+
+- 目标（玩家）的`GrantedApplicationImmunityTags`设为`"Source.Enemy.Dragon"`（免疫龙族敌人的所有效果）。
+- 当龙族敌人（源对象）释放任何 GE（如火焰吐息、震慑）时，由于源对象的`ASC`带有`"Source.Enemy.Dragon"`标签，这些 GE 都会被玩家免疫，无法应用。
+
+##### 2. `Granted Application Immunity Query`（基于 GE Spec 的免疫查询）
+
+**核心逻辑：通过 “GE 实例的具体信息” 来精准免疫特定 GE**。
+
+- 它不会笼统地看 “源对象的标签”，而是检查 “即将应用的`GameplayEffectSpec`（GE 的具体实例）” 是否匹配预设的 “查询条件”（比如 GE 的标签、修改器类型、持续时间等）。
+- 如果匹配，就阻止这个 GE 应用；不匹配则允许。这是一种 “精准免疫”，可以针对特定 GE（而非整个源对象的所有 GE）。
+
+**举例**：
+
+- 目标的免疫查询条件设为 “GE 的 Asset Tags 包含`"Type.Poison"`”（只免疫中毒类 GE）。
+- 当任何源对象释放 “中毒 GE”（其 Spec 符合查询条件），会被免疫；但释放 “减速 GE”（不符合条件）则可以正常应用。
+
+#### 免疫机制的额外价值：`OnImmunityBlockGameplayEffectDelegate`委托
+
+当免疫成功阻止 GE 应用时，`ASC`会触发这个委托。开发者可以绑定回调函数，做一些 “免疫反馈” 逻辑：
+
+- 播放免疫特效（如目标身上闪过护盾光效）；
+- 播放免疫音效（如 “格挡” 音效）；
+- 记录日志（如 “玩家成功免疫了龙族的火焰吐息”）。
+
+#### 与`Application Tag Requirements`的区别：
+
+- `Application Tag Requirements`是 GE 自身的 “应用门槛”（比如 “只能应用到带 XX 标签的目标”），不满足则 GE 自己放弃应用，**不会触发免疫相关的委托**；
+- 这里的免疫机制是目标主动 “挡掉” GE，**会触发免疫委托**，且能更灵活地控制 “哪些来源 / 哪些类型的 GE 被挡掉”。
+
+#### 总结：
+
+这种免疫机制通过`GrantedApplicationImmunityTags`（挡掉特定源的所有 GE）和`Granted Application Immunity Query`（挡掉特定类型的 GE），实现了对 GE 应用的主动拦截，同时通过委托提供了免疫反馈的入口，让 “免疫” 这一游戏逻辑既灵活又有表现力。
 
 ### 4.5.9
 
