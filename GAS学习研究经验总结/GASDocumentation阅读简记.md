@@ -2113,6 +2113,984 @@ Fortnite 为避免这种问题，采用了**自定义冷却管理（Bookkeeping�
 
 ### 4.5.16 修改已激活GameplayEffect的持续时间
 
+用到再学
+
 ### 4.5.17 运行时创建动态GameplayEffect
 
+在运行时创建动态`GameplayEffect`是一个高阶技术, 你不必经常使用它
+
+只有`即刻(Instant)GameplayEffect`可以在运行时由C++创建, `持续(Duration)`和`无限(Infinite)`GameplayEffect不能在运行时动态创建, 因为它们在同步时会寻找并不存在的`GameplayEffect`类定义. 
+
 ### 4.5.18 GameplayEffect Containers
+
+简化一些`GE`相关操作的自定义结构体，该部分不属于原生`GAS`，有需要再研究。
+
+## 4.6 Gameplay Abilities
+
+### 4.6.1 GameplayAbility定义
+
+#### 4.6.1.1 Replication Policy
+
+文中极不推荐使用`GA`中的该功能。
+
+##### Replication Policy（复制策略）：“名字骗人，改了也白改”
+
+先直白说它的问题：**你以为它能控制技能（GA）的同步逻辑，其实它根本起不到你想要的作用，纯属 “伪选项”** 。
+
+举个例子：
+比如你做一个多人游戏，想让 “玩家 A 放的火球技能” 同步给其他玩家（比如玩家 B 看到玩家 A 的火球动画）。你看到 “Replication Policy” 这个名字，以为改它就能控制 “火球技能的状态同步到其他玩家的屏幕上”—— 但实际上：
+
+- UE 里的 `GameplayAbility`（GA）有个核心规则：**它只在 “技能所属的客户端”（比如玩家 A 自己的客户端）和 “服务端” 运行，从不在 “模拟角色”（比如玩家 B 屏幕上看到的玩家 A 的角色）上运行**。
+- 技能的视觉效果（比如火球动画、特效），本来就不是靠 GA 本身同步的，而是靠 `AbilityTask`（技能任务，比如播放动画的任务）或 `GameplayCue`（技能提示，比如特效触发）同步到其他玩家的屏幕上。
+
+你改 “Replication Policy”，既不能让 GA 跑到模拟角色上，也不能优化视觉同步 —— 相当于 “对着空气调参数”，不仅没用，还可能因为误解它的作用（以为改了能解决同步问题），反而绕远路、甚至误改出其他 bug（比如打乱默认的 GA Spec 同步逻辑）。
+
+加上 Epic 都打算未来删掉它，现在用就是给自己留坑。
+
+#### 4.6.1.2 Server Respects Remote Ability Cancellation
+
+文中极不推荐使用该选项。
+
+##### Server Respects Remote Ability Cancellation：“客户端一喊停，服务端就瞎停，容易出‘不同步 bug’”
+
+这个设置的意思是：**客户端说 “我的技能结束了 / 取消了”，服务端就必须立刻停掉这个技能**—— 听起来好像 “客户端和服务端保持一致”，但实际会因为 “网络延迟” 和 “客户端预测” 搞砸。
+
+举个典型坑场景：
+你做一个 “蓄力火球” 技能：玩家按按键蓄力（GA 运行中），松开按键发射（GA 结束）。
+
+- 玩家是 “高延迟网络”（比如玩外服）：他松开按键时，客户端先 “预测” 技能结束了（屏幕上显示火球发出去），然后才把 “技能取消” 的消息发给服务端。
+- 但因为延迟，服务端此时还在处理 “蓄力到一半” 的逻辑（比如计算火球的伤害值），突然收到客户端的 “停手” 指令，就强制结束了技能 —— 结果就是：客户端显示 “火球发出去了”，但服务端没算伤害（因为被强制停了），出现 “打空了” 的 bug；
+- 反过来也可能：客户端卡了一下，没及时发 “取消” 指令，服务端还在运行技能，导致玩家明明取消了，角色还在蓄力，出现 “技能卡住” 的问题。
+
+简单说：这个设置把 “技能是否结束” 的决定权交给了客户端，但服务端才是最终的 “裁判”（负责伤害、状态等关键逻辑），强制让裁判听客户端的，必然会因为延迟导致 “两边对不上”，体验崩了。
+
+#### 4.6.1.3 Replicate Input Directly
+
+##### Replicate Input Directly：“疯狂发无用数据，网络扛不住，还容易出 bug”
+
+这个设置的意思是：**客户端会把 “技能输入的按下 / 抬起”（比如按 Q 激活技能）一直同步给服务端**—— 比如你按着 Q 不松，客户端会不停发 “我按 Q 了”“还按着 Q”“我松 Q 了”，没完没了。
+
+不推荐的核心原因是 **“性能浪费” 和 “可靠性差”** ，举两个实际坑：
+
+1. **性能坑：网络流量爆炸**
+   比如你做一个 MOBA 游戏，10 个玩家同时玩，每个玩家的技能输入（比如按 W、E、R）都用这个设置 “一直同步”—— 哪怕玩家只是误触了一下技能键（没激活成功），客户端也会发一堆 “按下 / 抬起” 的消息。这些无用数据会占满网络带宽，导致游戏卡顿、延迟飙升，尤其是手机端或低网速玩家，体验直接崩。
+2. **可靠性坑：输入顺序乱了**
+   自己同步输入很容易出 “顺序错” 的问题：比如玩家快速按 “Q（按下）→ Q（抬起）”，因为网络延迟，服务端可能先收到 “抬起” 的消息，再收到 “按下” 的消息 —— 结果就是：服务端以为玩家 “没按过 Q”，技能根本没激活，客户端却显示 “按了 Q”，出现 “技能按了没反应” 的 bug。
+
+而 Epic 推荐的 “`AbilityTask` 里的 `Generic Replicated Event`”（通用同步事件）是优化过的：它不会 “一直同步”，只在 “关键节点”（比如技能真的激活时）同步输入，还会自动处理 “输入顺序” 和 “延迟补偿”—— 相当于 Epic 已经给你搭好了 “安全的桥”，你偏要自己踩 “不稳的独木桥”，没必要。
+
+### 4.6.2 绑定输入到ASC
+
+
+
+#### 4.6.2.1 绑定输入时不激活Ability
+
+### 4.6.3 授予Ability
+
+这段代码展示了向 `AbilitySystemComponent`（ASC）授予 `GameplayAbility`（GA）的核心逻辑，涉及 “服务器权威授予”“能力规格（Spec）创建”“自动同步到客户端” 等关键机制。我们可以从 “为什么只在服务器授予”“`GameplayAbilitySpec` 是什么”“授予流程的核心细节” 三个层面拆解：
+
+#### 一、为什么 “只在服务器授予 GA”？
+
+代码第一行就明确限制：`if (Role != ROLE_Authority)` 则不执行授予逻辑 —— 这是 GAS 多人游戏的核心原则：**服务器拥有 “授予能力” 的唯一权威**，客户端不能自主授予 GA。
+
+原因有二：
+
+1. **防止客户端作弊**：如果客户端能自己授予 GA（比如给自己刷出 “无敌技能”），游戏逻辑会完全失控。服务器作为 “裁判”，必须控制所有 GA 的授予（如玩家升级解锁技能、完成任务获得技能）。
+2. **保证数据一致性**：服务器授予 GA 后，会自动将 “能力规格（`GameplayAbilitySpec`）” 同步给 “所属客户端”（即技能拥有者的客户端），其他客户端（如旁观玩家）不会收到 —— 这样既保证 “拥有者能看到自己的技能”，又避免 “无关客户端浪费性能同步不必要的数据”。
+
+#### 二、`FGameplayAbilitySpec`：GA 的 “实例化配置单”
+
+授予 GA 时，并不是直接把 `UGameplayAbility` 类扔进 ASC，而是创建一个 `FGameplayAbilitySpec`（简称 Spec）—— 它相当于 GA 的 “实例化配置单”，记录了这个 GA 的 “个性化参数”。
+
+代码中 `FGameplayAbilitySpec` 的构造参数详解：
+
+```cpp
+FGameplayAbilitySpec(
+    StartupAbility,                  // 1. GA的类（如“火球术”的蓝图类）
+    GetAbilityLevel(...),            // 2. 技能等级（影响伤害/范围等）
+    static_cast<int32>(...AbilityInputID),  // 3. 绑定的输入枚举值（如“Ability1”对应左键）
+    this                             // 4. SourceObject（技能的来源对象，通常是角色自身）
+)
+```
+
+这四个参数决定了 GA 的 “实例化状态”：
+
+- **参数 1（GA 类）**：指定要授予的具体技能（如 `UGA_Fireball`）；
+- **参数 2（等级）**：同一 GA 可以有不同等级（如 1 级火球术伤害 50，2 级 100），通过 `GetAbilityLevel` 动态获取；
+- **参数 3（输入 ID）**：将 GA 与之前绑定的输入枚举关联（如绑定 “Ability1”，则按左键会激活该 GA）；
+- **参数 4（SourceObject）**：记录 “谁拥有这个技能”（通常是角色自身 `this`），用于技能逻辑中定位来源（如伤害计算时识别 “攻击者是谁”）。
+
+#### 三、授予流程的核心细节
+
+##### 1. `AddCharacterAbilities` 函数的执行时机
+
+通常在角色初始化时调用（如 `BeginPlay` 或玩家出生时），用于授予 “初始技能”（如默认攻击、跳跃）。代码中的 `CharacterAbilitiesGiven` 是个布尔值标记，确保技能只被授予一次（避免重复授予导致多个相同技能）。
+
+##### 2. `CharacterAbilities` 数组的作用
+
+`TArray<TSubclassOf<UGDGameplayAbility>> CharacterAbilities` 是角色类中定义的 “初始技能列表”，开发者可以在蓝图 / 代码中配置（如给 “战士” 角色配置 `GA_SwordAttack`、`GA_ShieldBlock`，给 “法师” 配置 `GA_Fireball`、`GA_IceShield`）。
+遍历这个数组并调用 `GiveAbility`，就能批量授予角色的所有初始技能。
+
+##### 3. 授予后发生了什么？
+
+- **服务器端**：ASC 将 Spec 加入 `ActivatableAbilities` 列表，该 GA 变为 “可激活状态”（满足标签条件、冷却等时可被输入触发）；
+- **网络同步**：服务器自动将 Spec 同步给 “所属客户端”（角色自己的客户端），客户端的 ASC 会创建对应的本地 Spec 副本，确保 “客户端能预测技能表现”（如本地播放技能动画）；
+- **其他客户端**：不会收到这个 Spec，因为他们不需要执行该技能的逻辑，只需通过 `AbilityTask` 或 `GameplayCue` 同步视觉效果（如看到别人放火球）。
+
+#### 四、扩展：动态授予技能的场景
+
+除了初始技能，游戏中还需要 “动态授予”（如升级解锁、拾取道具获得），逻辑与初始授予一致，只需在服务器端调用 `GiveAbility` 即可：
+
+```cpp
+// 示例：玩家升级后授予新技能
+void AMyPlayerState::OnLevelUp(int32 NewLevel)
+{
+    if (NewLevel == 5 && AbilitySystemComponent)
+    {
+        // 服务器授予“终极技能”
+        FGameplayAbilitySpec UltimateSpec(UGA_Ultimate::StaticClass(), 1, static_cast<int32>(EGDAbilityInputID::Ability5), this);
+        AbilitySystemComponent->GiveAbility(UltimateSpec);
+    }
+}
+```
+
+#### 总结
+
+向 ASC 授予 GA 的核心逻辑是：**服务器通过 `GiveAbility` 函数，将 GA 包装成 `FGameplayAbilitySpec` 并添加到 ASC 中**，同时自动同步给所属客户端。这个过程保证了 “技能授予的权威性” 和 “网络数据的一致性”，是 GAS 中 “技能管理” 的基础。
+
+记住：所有 GA 的授予必须在服务器端执行，客户端只负责接收同步后的 Spec 并处理本地表现（如动画、特效），不参与授权逻辑。
+
+### 4.6.4 激活Ability
+
+在 GAS 中，`GameplayAbility`（GA）除了 “输入自动激活”，还能通过 `ASC` 提供的 4 种主动激活方式灵活触发 —— 这些方式覆盖了 “批量激活”“精准激活”“带数据激活” 等场景，是实现被动技能、剧情触发、联动技能的核心工具。下面分 “每种激活方式的作用 + 参数 + 场景” 拆解，重点讲易踩坑的 “Event 激活” 细节：
+
+#### 一、先明确：主动激活的核心价值
+
+输入自动激活适合 “玩家主动按键触发”（如 Q 键放技能），但游戏中还需要 **“非玩家触发” 或 “带条件 / 数据的触发”**：
+
+- 比如 “战斗开始时自动激活所有‘战斗准备’技能”（批量激活）；
+- 比如 “剧情触发特定‘大招’”（精准激活某类技能）；
+- 比如 “触发治疗技能时，传递‘治疗目标 + 治疗量’”（带数据激活）。
+  这 4 种主动激活方式就是为解决这些需求设计的。
+
+#### 二、4 种主动激活方式详解
+
+##### 1. 按 `GameplayTag` 激活：`TryActivateAbilitiesByTag`
+
+**核心作用**：批量激活 ASC 中 “带有指定标签” 且满足激活条件（冷却、标签需求等）的所有 GA。
+可以理解为 “给所有带某标签的技能发‘激活指令’”。
+
+##### 关键细节：
+
+- **函数原型**：
+
+  ```cpp
+  bool TryActivateAbilitiesByTag(const FGameplayTagContainer& GameplayTagContainer, bool bAllowRemoteActivation = true);
+  ```
+
+  - `GameplayTagContainer`：要匹配的标签（如 `GameState.BattleStart`“战斗开始”、`Buff.DefenseUp`“防御提升”）；
+  - `bAllowRemoteActivation`：是否允许 “客户端触发，服务器验证”（通常设为 `true`，但敏感技能如 “无敌” 可设为 `false`，强制仅服务器激活，防作弊）。
+
+- **适用场景**：需要批量激活 “同类技能” 的场景。
+  举例：
+  游戏进入战斗时，调用：
+
+  ```cpp
+  // 定义“战斗开始”标签
+  FGameplayTagContainer BattleStartTags;
+  BattleStartTags.AddTag(FGameplayTag::RequestGameplayTag("GameState.BattleStart"));
+  // 激活所有带该标签的技能（如战士的“战斗怒吼”、法师的“元素唤醒”）
+  ASC->TryActivateAbilitiesByTag(BattleStartTags);
+  ```
+
+  此时，所有 “标签需求包含 `GameState.BattleStart`” 且满足条件的 GA 会被批量激活。
+
+##### 2. 按 `GA 类` 激活：`TryActivateAbilityByClass`
+
+**核心作用**：精准激活 ASC 中 “指定类” 的 GA（若该类有多个实例，激活优先级最高的那个）。
+适合 “明确知道要激活哪个类的技能”，但不关心具体实例的场景。
+
+##### 关键细节：
+
+- **函数原型**：
+
+  ```cpp
+  bool TryActivateAbilityByClass(TSubclassOf<UGameplayAbility> InAbilityToActivate, bool bAllowRemoteActivation = true);
+  ```
+
+  - `InAbilityToActivate`：要激活的 GA 类（如 `UGA_Fireball`“火球术”、`UGA_Heal`“治疗术”）。
+
+- **适用场景**：剧情触发、任务奖励等 “明确激活某类技能” 的场景。
+  举例：
+  剧情对话结束后，强制激活玩家的 “终极技能”：
+
+  ```cpp
+  // 激活“终极技能”类的 GA
+  ASC->TryActivateAbilityByClass(UGA_Ultimate::StaticClass());
+  ```
+
+  若玩家已拥有该类 GA 且满足条件（无冷却、有能量），则直接激活。
+
+##### 3. 按 `GameplayAbilitySpecHandle` 激活：`TryActivateAbility`
+
+**核心作用**：激活 ASC 中 “特定实例” 的 GA（通过 `FGameplayAbilitySpecHandle` 定位）。
+适合 “同一 GA 有多个实例” 的场景（如同一技能有不同等级 / 配置的 `Spec`，需激活其中一个）。
+
+##### 关键细节：
+
+- **函数原型**：
+
+  ```cpp
+  bool TryActivateAbility(FGameplayAbilitySpecHandle AbilityToActivate, bool bAllowRemoteActivation = true);
+  ```
+
+  - `AbilityToActivate`：`FGameplayAbilitySpec` 的唯一标识（`Handle`）—— 授予 GA 时，`ASC->GiveAbility()` 会返回该 `Handle`，需提前保存。
+
+- **适用场景**：同一 GA 有多个实例，需精准激活某一个。
+  举例：
+  玩家有两个 “火球术” 实例（1 级和 2 级），激活 2 级实例：
+
+  ```cpp
+  // 授予 2 级火球术时，保存其 SpecHandle
+  FGameplayAbilitySpec FireballSpec2(UGA_Fireball::StaticClass(), 2); // 2 级
+  FGameplayAbilitySpecHandle FireballHandle2 = ASC->GiveAbility(FireballSpec2);
+  
+  // 后续激活 2 级火球术（而非 1 级）
+  ASC->TryActivateAbility(FireballHandle2);
+  ```
+
+##### 4. 按 `GameplayEvent` 激活：`TriggerAbilityFromGameplayEvent`
+
+**核心作用**：通过 “发送 `GameplayEvent`” 激活 GA，且能传递 **数据负载（Payload）**（如目标信息、伤害值、触发来源）—— 这是唯一支持 “带数据激活” 的方式，灵活性最高。
+
+##### 关键细节（分 3 步：配置 GA→发送 Event→激活技能）：
+
+##### 步骤 1：给 GA 配置 “Event 触发条件”
+
+要让 GA 能被 Event 激活，必须先在 GA 中设置 **`Trigger`（触发器）**：
+
+1. 在 GA 的蓝图 / 代码中，找到 `Trigger` 配置（蓝图中在 “Class Defaults” 的 “Ability Trigger Data” 里）；
+2. 新增一个 Trigger，选择 **`GameplayEvent`** 类型；
+3. 给 Trigger 分配一个 **`GameplayTag`**（如 `Event.Activate.Heal`“激活治疗”）—— 这个标签是 “Event 与 GA 的绑定钥匙”。
+
+##### 步骤 2：发送 `GameplayEvent` 并传递 Payload
+
+通过 `UAbilitySystemBlueprintLibrary::SendGameplayEventToActor` 发送 Event，同时用 `FGameplayEventData` 传递数据（Payload）：
+
+```cpp
+// 1. 创建要传递的 Payload（数据负载）
+FGameplayEventData EventData;
+EventData.Instigator = PlayerCharacter; // 触发者（玩家）
+EventData.TargetData = TargetDataHandle; // 目标数据（如治疗目标的位置/引用）
+EventData.EventMagnitude = 200.0f; // 额外数值（如治疗量 200）
+
+// 2. 定义 Event 标签（必须和 GA 的 Trigger 标签一致）
+FGameplayTag ActivateHealTag = FGameplayTag::RequestGameplayTag("Event.Activate.Heal");
+
+// 3. 给目标 ASC 发送 Event（激活治疗技能）
+UAbilitySystemBlueprintLibrary::SendGameplayEventToActor(
+    TargetCharacter, // 技能要作用的目标（如队友）
+    ActivateHealTag, // 绑定的 Event 标签
+    EventData // 传递的 Payload
+);
+```
+
+##### 步骤 3：GA 中接收 Payload 并执行逻辑
+
+GA 激活时，必须通过 `ActivateAbilityFromEvent` 函数接收 Payload（而非标准的 `ActivateAbility`）：
+
+- 蓝图注意事项：蓝图中不能有 “标准 `ActivateAbility` 节点”，否则会优先调用它，导致`ActivateAbilityFromEvent`不执行；必须用 “`ActivateAbilityFromEvent`” 节点，从`EventData`中读取 Payload
+
+- 代码示例：
+
+  ```cpp
+  void UGA_Heal::ActivateAbilityFromEvent(const FGameplayEventData& EventData)
+  {
+      Super::ActivateAbilityFromEvent(EventData);
+  
+      // 从 Payload 中读取数据
+      AActor* HealTarget = EventData.TargetData.Get(0)->GetActor(); // 治疗目标
+      float HealAmount = EventData.EventMagnitude; // 治疗量 200
+  
+      // 执行治疗逻辑（应用治疗 GE）
+      ApplyHealEffect(HealTarget, HealAmount);
+  
+      // 技能结束，调用 EndAbility（非无限技能必须调用）
+      EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, false);
+  }
+  ```
+
+##### 适用场景：需要传递数据的激活（如治疗、伤害、目标联动）。
+
+比如：“队友倒地时，触发‘救援治疗’技能，传递‘倒地队友的引用’和‘救援治疗量’”。
+
+#### 三、特殊激活方式：`GiveAbilityAndActivateOnce`
+
+**核心作用**：“授予 GA + 立即激活一次” 二合一，激活后该 GA 会被自动移除（一次性技能）。
+适合 “临时触发一次的技能”（如剧情奖励的 “临时无敌”、道具触发的 “一次性爆发”）。
+
+```cpp
+// 创建一次性技能的 Spec（如“临时无敌”，等级 1）
+FGameplayAbilitySpec InvincibilitySpec(UGA_TempInvincibility::StaticClass(), 1);
+// 授予并立即激活，激活后自动移除
+ASC->GiveAbilityAndActivateOnce(InvincibilitySpec);
+```
+
+#### 四、关键注意事项
+
+1. **`EndAbility` 必须调用**：
+   除了 “无限持续的被动技能”（如永久加防御的被动），所有主动激活的 GA 都必须在逻辑结束后调用 `EndAbility()`—— 否则 GA 会一直处于 “激活中” 状态，占用资源且无法再次激活。
+2. **`bAllowRemoteActivation` 的安全意义**：
+   对于 “伤害、无敌、治疗” 等敏感技能，建议设为 `false`，强制 **“仅服务器激活”**（客户端触发请求，服务器验证后执行），避免客户端作弊（如本地触发无敌但服务器不认可）。
+3. **蓝图激活 Event 技能的坑**：
+   若在蓝图中用 Event 激活 GA，**必须使用 “ActivateAbilityFromEvent” 节点**，且蓝图中不能有 “标准 ActivateAbility” 节点 —— 否则标准节点会优先执行，导致 Payload 无法接收。
+
+#### 五、总结：如何选择激活方式？
+
+| 激活方式                   | 核心优势                | 适用场景                               |
+| -------------------------- | ----------------------- | -------------------------------------- |
+| 按 Tag 激活                | 批量激活同类技能        | 战斗开始、场景切换等批量触发           |
+| 按 Class 激活              | 精准激活特定类技能      | 剧情触发、任务奖励等明确类的技能       |
+| 按 SpecHandle 激活         | 激活特定实例技能        | 同一技能多实例（如不同等级）的精准触发 |
+| 按 Event 激活              | 支持传递数据（Payload） | 治疗、伤害、目标联动等需额外数据的场景 |
+| GiveAbilityAndActivateOnce | 临时一次性技能          | 道具触发、临时 buff 等一次性效果       |
+
+根据 “是否需要批量激活”“是否需要传递数据”“是否是一次性技能” 三个维度，就能快速选择合适的激活方式，避免冗余逻辑或踩坑。
+
+#### 4.6.4.1 被动Ability
+
+这段内容详细讲解了 **被动 `GameplayAbility`（被动技能）** 的核心实现逻辑 —— 重点是 “如何自动激活” 和 “为何选择 `OnAvatarSet` 作为初始化入口”，同时涉及被动技能的网络策略设计。我们可以从 “被动技能的特殊需求”“`OnAvatarSet` 的作用”“代码逻辑拆解”“网络策略” 四个层面彻底理解：
+
+##### 一、先明确：被动技能的核心需求
+
+被动技能（如 “永久增加 10% 防御”“每 5 秒恢复 5 点生命值”）与主动技能（如 “火球术”“闪避”）的核心差异在于：
+
+1. **自动激活**：不需要玩家按键触发，授予后立即激活，且通常持续运行；
+2. **生命周期绑定**：与 “角色（Avatar）” 绑定 —— 当技能的 `AvatarActor`（技能作用的角色）被设置后（如玩家出生、角色切换），被动技能需要立即初始化并生效；
+3. **无手动终止**：除非技能被移除（如角色死亡、被动被驱散），否则不会主动结束，无需调用 `EndAbility()`。
+
+这些需求决定了被动技能不能用主动技能的 “输入激活” 或 “Event 激活”，必须依赖 `OnAvatarSet` 这个特殊时机。
+
+##### 二、关键入口：`OnAvatarSet` 函数的作用
+
+`UGameplayAbility::OnAvatarSet` 是 GAS 框架为 “技能与角色绑定” 设计的 **初始化回调函数**，其触发时机和作用完美匹配被动技能的需求：
+
+###### 1. 触发时机（为什么选它？）
+
+`OnAvatarSet` 仅在以下两个条件同时满足时触发：
+
+- 技能已通过 `ASC->GiveAbility()` 授予（加入 `ActivatableAbilities` 列表）；
+- 技能的 **`AvatarActor` 被设置**（即技能明确知道 “要作用于哪个角色”）。
+
+典型场景：
+
+- 玩家出生时，`PlayerState` 的 ASC 授予被动技能，同时 `AvatarActor` 设为玩家的 `Character` → `OnAvatarSet` 触发；
+- 角色切换时（如从 “战士” 切换到 “法师”），新角色的 ASC 授予对应被动技能，`AvatarActor` 设为新角色 → `OnAvatarSet` 触发。
+
+这个时机确保被动技能 “只在角色准备就绪后才初始化”，避免出现 “技能已授予但不知道作用于谁” 的空指针问题。
+
+###### 2. 框架定位（Epic 为什么推荐它？）
+
+Epic 明确说明 `OnAvatarSet` 是 **被动技能的正确初始化位置**，相当于技能的 “`BeginPlay`”—— 主动技能的初始化通常在 `ActivateAbility` 中，而被动技能因为 “自动激活”，需要更早的初始化入口，`OnAvatarSet` 恰好填补了这个空白。
+
+##### 三、代码逻辑拆解：被动技能自动激活的实现
+
+以样例代码 `UGDGameplayAbility::OnAvatarSet` 为例，逐行解析被动技能 “自动激活” 的核心逻辑：
+
+```cpp
+void UGDGameplayAbility::OnAvatarSet(const FGameplayAbilityActorInfo * ActorInfo, const FGameplayAbilitySpec & Spec)
+{
+    Super::OnAvatarSet(ActorInfo, Spec); // 调用父类实现，确保框架基础逻辑执行
+
+    // ActivateAbilityOnGranted：自定义布尔值，标记“该技能是否在授予时自动激活”
+    if (ActivateAbilityOnGranted)
+    {
+        // 调用 ASC 的 TryActivateAbility，通过 Spec.Handle 激活当前被动技能
+        bool ActivatedAbility = ActorInfo->AbilitySystemComponent->TryActivateAbility(Spec.Handle, false);
+    }
+}
+```
+
+###### 1. 核心变量：`ActivateAbilityOnGranted`
+
+这是自定义 `UGameplayAbility` 子类（如 `UGDGameplayAbility`）中添加的布尔值变量（通常用 `UPROPERTY` 暴露给蓝图）：
+
+- 设为 `true`：表示该技能是被动技能，授予后自动激活（如 “永久防御加成”）；
+- 设为 `false`：表示该技能是主动技能，需要手动触发（如 “火球术”）。
+
+通过这个变量，可以在同一个父类中区分 “被动” 和 “主动” 技能，复用初始化逻辑，无需为被动技能单独写一套类。
+
+###### 2. 激活逻辑：`TryActivateAbility(Spec.Handle, false)`
+
+- **`Spec.Handle`**：`FGameplayAbilitySpec` 的唯一标识 —— 每个授予的技能都有一个独立的 `Spec`，通过 `Handle` 可以精准激活 “当前这个被动技能实例”（避免激活其他同名技能）；
+- **第二个参数 `false`**：对应 `bAllowRemoteActivation`，设为 `false` 表示 “不允许客户端远程激活”—— 被动技能的激活逻辑必须由服务器控制（防作弊，避免客户端自己激活非法被动），客户端仅同步结果（如显示被动特效）。
+
+###### 3. 被动技能的 `ActivateAbility` 实现（补充）
+
+`OnAvatarSet` 触发 `TryActivateAbility` 后，会调用被动技能的 `ActivateAbility` 函数。由于被动技能 “持续运行”，`ActivateAbility` 中通常不需要复杂的异步逻辑（如 `AbilityTask`），只需初始化 “持续效果”（如应用永久 `GameplayEffect`）：
+
+```cpp
+void UGA_PassiveDefense::ActivateAbility(const FGameplayAbilitySpecHandle Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo ActivationInfo, const FGameplayEventData* TriggerEventData)
+{
+    Super::ActivateAbility(Handle, ActorInfo, ActivationInfo, TriggerEventData);
+
+    if (!HasAuthority()) return; // 仅服务器执行权威逻辑
+
+    // 1. 应用“永久增加10%防御”的 GameplayEffect（无限持续）
+    if (ActorInfo->AbilitySystemComponent)
+    {
+        // 创建 GE Spec（防御加成 GE）
+        FGameplayEffectSpecDef DefenseGESpecDef;
+        DefenseGESpecDef.Def = UGE_PassiveDefenseBoost::StaticClass(); // 防御加成 GE 类
+        DefenseGESpecDef.Level = 1; // 技能等级
+
+        // 应用无限持续的 GE（持续时间设为无限）
+        ActorInfo->AbilitySystemComponent->ApplyGameplayEffectSpecToSelf(
+            MakeGameplayEffectSpec(DefenseGESpecDef),
+            Handle,
+            ActorInfo->OwnerActor.Get()
+        );
+    }
+
+    // 2. 被动技能无需调用 EndAbility()（持续运行，直到被移除）
+}
+```
+
+##### 四、被动技能的网络策略：为什么是 “仅服务器（Server Only）”？
+
+样例中提到 “被动技能一般有一个仅服务器的网络执行策略”，核心原因是 **“避免客户端作弊” 和 “保证数据一致性”**：
+
+###### 1. 网络执行策略（Net Execution Policy）的作用
+
+`GameplayAbility` 的网络执行策略决定了 “技能的逻辑在哪些端（服务器 / 客户端）执行”，被动技能选择 “Server Only” 意味着：
+
+- 技能的 `ActivateAbility`、`OnAvatarSet` 等核心逻辑 **仅在服务器执行**；
+- 客户端不执行任何逻辑，仅通过服务器同步的 `GameplayEffect`（如防御加成）和 `GameplayCue`（如被动特效）显示结果。
+
+###### 2. 为什么不能让客户端执行？
+
+- **防作弊**：如果客户端能执行被动技能逻辑（如自己加防御），作弊者可以修改客户端代码，给自己叠加无限防御，服务器无法验证；
+- **数据一致性**：被动技能的效果（如防御值、回血速度）是游戏的 “权威数据”，必须由服务器统一计算 —— 如果客户端和服务器都执行，可能因延迟或计算差异导致 “客户端显示防御 100，服务器实际算 50” 的不一致问题。
+
+##### 五、总结：被动技能的完整实现链路
+
+1. **技能配置**：在自定义 `UGameplayAbility` 子类中添加 `ActivateAbilityOnGranted` 布尔值，设为 `true`；将网络执行策略设为 “Server Only”；
+2. **授予技能**：服务器通过 `ASC->GiveAbility()` 授予被动技能（如玩家出生时）；
+3. **触发初始化**：当技能的 `AvatarActor` 被设置时，`OnAvatarSet` 自动触发；
+4. **自动激活**：`OnAvatarSet` 中调用 `TryActivateAbility`，激活被动技能；
+5. **持续生效**：`ActivateAbility` 中应用无限持续的 `GameplayEffect`，技能持续运行，无需调用 `EndAbility()`；
+6. **客户端同步**：服务器同步 `GameplayEffect` 效果和 `GameplayCue` 到客户端，客户端显示被动效果（如角色身上的防御光环）。
+
+这套逻辑的核心是利用 `OnAvatarSet` 精准匹配被动技能 “与角色绑定即激活” 的需求，同时通过 “Server Only” 策略保证数据安全和一致性，是 GAS 中实现被动技能的标准范式。
+
+### 4.6.5 取消Ability
+
+在 GAS 中，“取消 `GameplayAbility`（GA）” 的核心是**终止技能的运行逻辑、清理资源，并同步状态**—— 内部取消（技能自己停）和外部取消（ASC 强制停）的逻辑不同，且需要注意 “非实例化 GA” 的特殊坑。下面结合函数用途、场景和注意事项，把取消逻辑讲透：
+
+#### 一、先明确：取消 GA 的核心目的
+
+无论是内部还是外部取消，最终都是为了：
+
+1. 终止技能的异步逻辑（如 `AbilityTask` 播放的动画、投射物飞行）；
+2. 清理技能占用的资源（如定时器、临时数据）；
+3. 同步技能状态（告知服务器 / 客户端 “技能已取消”，避免两边状态不一致）；
+4. 允许技能重新激活（未正确取消的 GA 会一直处于 “激活中”，无法再次触发）。
+
+#### 二、内部取消：`CancelAbility()`—— 技能自己 “喊停”
+
+`CancelAbility()` 是 `UGameplayAbility` 类的成员函数，**只能在 GA 内部调用**（如技能逻辑中判断 “满足取消条件” 时主动触发）。
+
+##### 核心逻辑：
+
+调用 `CancelAbility()` 后，会自动执行两步：
+
+1. 调用 `EndAbility()` 函数，并将 `WasCancelled` 参数设为 `true`（标记 “技能是被取消的，而非正常结束”）；
+2. 终止 GA 关联的所有 `AbilityTask`（如播放动画的 `UAT_PlayMontageAndWait`、等待延迟的 `UAT_WaitDelay`），避免异步逻辑继续执行。
+
+##### 适用场景：
+
+技能内部的 “主动取消”，比如：
+
+- 蓄力技能（按住蓄力，松开前按 ESC 取消）：在 `UAT_WaitInputRelease` 的 “取消回调” 中调用 `CancelAbility()`；
+- 引导技能（持续施法，按右键中断）：在 “中断输入” 的响应逻辑中调用 `CancelAbility()`。
+
+##### 代码示例（蓄力技能取消）：
+
+```cpp
+void UGA_ChargeFireball::ActivateAbility(...)
+{
+    Super::ActivateAbility(...);
+
+    // 创建“等待输入松开”的 Task，同时监听“取消输入”
+    UAT_WaitInputRelease* WaitReleaseTask = UAT_WaitInputRelease::Create(this);
+    // 正常松开：执行发射逻辑
+    WaitReleaseTask->OnRelease.AddUObject(this, &UGA_ChargeFireball::OnInputReleased);
+    // 取消输入（如按 ESC）：调用 CancelAbility()
+    WaitReleaseTask->OnCancel.AddUObject(this, &UGA_ChargeFireball::OnInputCancelled);
+    WaitReleaseTask->ReadyForActivation();
+}
+
+void UGA_ChargeFireball::OnInputCancelled()
+{
+    // 内部取消技能，自动调用 EndAbility(..., true)
+    CancelAbility();
+}
+
+void UGA_ChargeFireball::EndAbility(...)
+{
+    if (WasCancelled)
+    {
+        // 处理取消后的逻辑（如停止蓄力动画、返还部分蓝量）
+        StopChargeMontage();
+        RefundMana(50); // 返还50%蓝量
+    }
+    else
+    {
+        // 正常结束的逻辑（如发射火球）
+        SpawnFireball();
+    }
+
+    Super::EndAbility(...);
+}
+```
+
+#### 三、外部取消：ASC 的 5 个函数 —— 强制终止技能
+
+当需要从 “技能外部” 取消 GA 时（如角色被眩晕、场景切换、技能优先级冲突），需调用 `AbilitySystemComponent`（ASC）提供的取消函数。这 5 个函数覆盖了 “按类取消”“按实例取消”“批量取消” 等场景，各有明确用途。
+
+##### 1. 按 GA 类取消：`CancelAbility(UGameplayAbility* Ability)`
+
+- **作用**：取消 ASC 中所有 “指定类” 的激活中 GA（比如取消所有 `UGA_Fireball` 类的技能）。
+- **关键细节**：参数是 GA 的**类对象**（如 `UGA_Fireball::StaticClass()`），会取消该类的所有激活实例（若同一类有多个激活的 GA，会全部取消）。
+- **适用场景**：需要 “批量终止某类技能”，比如 “角色被眩晕时，取消所有正在施法的攻击技能”。
+
+**代码示例（眩晕取消攻击技能）：**
+
+```cpp
+// 角色被眩晕时，调用该函数
+void AMyCharacter::OnStunned()
+{
+    if (AbilitySystemComponent)
+    {
+        // 取消所有“攻击类 GA”（假设 UGA_Attack 是所有攻击技能的父类）
+        AbilitySystemComponent->CancelAbility(UGA_Attack::StaticClass());
+    }
+}
+```
+
+##### 2. 按 SpecHandle 取消：`CancelAbilityHandle(const FGameplayAbilitySpecHandle& AbilityHandle)`
+
+- **作用**：取消 ASC 中 “特定实例” 的 GA—— 通过 `FGameplayAbilitySpecHandle`（GA 实例的唯一标识）精准定位，只取消目标实例，不影响同类其他实例。
+- **关键细节**：`AbilityHandle` 是授予 GA 时 `ASC->GiveAbility()` 返回的标识，需提前保存（比如存在角色的变量中）。
+- **适用场景**：同一类 GA 有多个激活实例，需精准取消某一个，比如 “玩家同时激活两个 `UGA_Shield`（小盾和大盾），只取消小盾”。
+
+**代码示例（精准取消小盾技能）：**
+
+```cpp
+// 授予小盾技能时，保存其 SpecHandle
+FGameplayAbilitySpec SmallShieldSpec(UGA_SmallShield::StaticClass());
+FGameplayAbilitySpecHandle SmallShieldHandle = AbilitySystemComponent->GiveAbility(SmallShieldSpec);
+SavedShieldHandle = SmallShieldHandle; // 保存到角色的变量中
+
+// 后续需要取消小盾时
+void AMyCharacter::CancelSmallShield()
+{
+    if (AbilitySystemComponent && SavedShieldHandle.IsValid())
+    {
+        AbilitySystemComponent->CancelAbilityHandle(SavedShieldHandle);
+    }
+}
+```
+
+##### 3. 按标签批量取消：`CancelAbilities(const FGameplayTagContainer* WithTags=nullptr, const FGameplayTagContainer* WithoutTags=nullptr, UGameplayAbility* Ignore=nullptr)`
+
+- 作用：按`GameplayTag`筛选并取消激活中的 GA，支持 “包含指定标签”“排除指定标签”“忽略某个 GA” 三种筛选规则。
+  - `WithTags`：只取消 “带有这些标签” 的 GA（如取消所有带 `Tag.Ability.Type.Attack` 的攻击技能）；
+  - `WithoutTags`：取消 “不带有这些标签” 的 GA（如取消除带 `Tag.Ability.Type.Defense` 外的所有技能）；
+  - `Ignore`：取消时跳过这个 GA（如取消所有技能，但保留 “无敌技能”）。
+- **适用场景**：需要 “按标签分类取消”，比如 “场景切换时，取消所有非被动技能（带 `Tag.Ability.Type.Active`），保留被动技能”。
+
+**代码示例（场景切换取消主动技能）：**
+
+```cpp
+void AMyPlayerController::OnLevelChanged()
+{
+    if (AMyCharacter* MyChar = GetPawn<AMyCharacter>())
+    {
+        if (UAbilitySystemComponent* ASC = MyChar->GetAbilitySystemComponent())
+        {
+            // 定义“主动技能”标签
+            FGameplayTagContainer ActiveAbilityTags;
+            ActiveAbilityTags.AddTag(FGameplayTag::RequestGameplayTag("Ability.Type.Active"));
+
+            // 取消所有带“主动技能”标签的 GA，忽略“无敌技能”
+            ASC->CancelAbilities(&ActiveAbilityTags, nullptr, UGA_GodMode::StaticClass());
+        }
+    }
+}
+```
+
+##### 4. 取消所有技能：`CancelAllAbilities(UGameplayAbility* Ignore=nullptr)`
+
+- **作用**：取消 ASC 中所有激活中的 GA，可选 “忽略某个 GA”（如取消所有技能，但保留 “复活技能”）。
+- **关键坑点**：对 **非实例化 GA（Non-Instanced GA）** 支持不好 —— 如样例项目中的 “跳跃技能”（通常设为非实例化，因为不需要多实例），`CancelAllAbilities` 可能会 “命中该 GA 后停止遍历”，导致其他技能没被取消。
+- **适用场景**：需要 “一刀切” 取消所有技能，且不涉及非实例化 GA 的场景，比如 “角色死亡时，取消所有正在运行的技能”。
+
+**代码示例（角色死亡取消所有技能）：**
+
+```cpp
+void AMyCharacter::OnDeath()
+{
+    if (AbilitySystemComponent)
+    {
+        // 取消所有技能，忽略“死亡动画技能”（确保死亡动画能正常播放）
+        AbilitySystemComponent->CancelAllAbilities(UGA_DeathAnimation::StaticClass());
+    }
+}
+```
+
+##### 5. 彻底销毁激活状态：`DestroyActiveState()`
+
+- **作用**：比 `CancelAllAbilities` 更彻底 —— 不仅取消所有激活中的 GA，还会销毁 ASC 中所有 “实例化 GA” 的状态（如清除 `ActivatableAbilities` 列表中的临时数据），相当于 “重置 ASC 的技能激活状态”。
+- **适用场景**：需要 “完全重置技能系统” 的极端场景，比如 “角色重生时，彻底清理上一轮的技能状态，避免残留逻辑影响新生命周期”。
+
+**代码示例（角色重生重置技能状态）：**
+
+```cpp
+void AMyCharacter::OnRespawn()
+{
+    if (AbilitySystemComponent)
+    {
+        // 彻底销毁所有激活状态，重置技能系统
+        AbilitySystemComponent->DestroyActiveState();
+
+        // 重新授予初始技能
+        AddCharacterAbilities();
+    }
+}
+```
+
+#### 四、关键注意事项：非实例化 GA 的取消坑
+
+样例中提到 “`CancelAllAbilities` 对非实例化 GA 支持不好”，需要重点理解：
+
+##### 1. 什么是 “非实例化 GA（Non-Instanced GA）”？
+
+GA 的 “实例化” 指：授予 GA 时，是否为每个授予操作创建独立的 `FGameplayAbilitySpec` 实例。
+
+- **实例化 GA**：每次 `GiveAbility()` 都会创建新的 `Spec`（如 “火球术”，可同时激活多个实例）；
+- **非实例化 GA**：所有 `GiveAbility()` 共享同一个 `Spec`（如 “跳跃”“冲刺”，同一时间只能激活一个，无需多实例）。
+
+##### 2. `CancelAllAbilities` 的坑点：
+
+`CancelAllAbilities` 遍历 ASC 的激活中 GA 时，遇到非实例化 GA 可能会 “提前终止遍历”（引擎底层逻辑对非实例化 GA 的处理优先级特殊），导致后续的实例化 GA 没被取消。
+
+##### 3. 解决方案：
+
+对非实例化 GA，优先用 `CancelAbility()`（按类取消）或 `CancelAbilityHandle()`（按实例取消），避免用 `CancelAllAbilities`。
+例如，取消 “跳跃”（非实例化 GA）：
+
+```cpp
+// 正确：用 CancelAbility 按类取消非实例化 GA
+AbilitySystemComponent->CancelAbility(UGA_Jump::StaticClass());
+
+// 错误：用 CancelAllAbilities 可能无法取消，还会影响其他技能
+// AbilitySystemComponent->CancelAllAbilities();
+```
+
+#### 五、总结：如何选择取消方式？
+
+| 取消场景                          | 推荐函数                         | 注意事项                                   |
+| --------------------------------- | -------------------------------- | ------------------------------------------ |
+| 技能内部主动取消                  | `CancelAbility()`（GA 成员函数） | 自动调用 `EndAbility(true)`，清理 Task     |
+| 外部精准取消某一个 GA 实例        | `CancelAbilityHandle()`          | 需提前保存 `SpecHandle`                    |
+| 外部批量取消某类 GA               | `CancelAbility()`（ASC 函数）    | 按类取消，覆盖所有实例                     |
+| 外部按标签批量筛选取消            | `CancelAbilities()`              | 灵活用 `WithTags`/`WithoutTags` 筛选       |
+| 外部取消所有技能（无需求实例 GA） | `CancelAllAbilities()`           | 避开非实例化 GA，否则用 `CancelAbility` 补 |
+| 外部彻底重置技能激活状态          | `DestroyActiveState()`           | 仅用于角色重生、场景切换等极端场景         |
+
+核心原则：**精准取消优先用 `CancelAbilityHandle`，批量取消优先用 `CancelAbilities`（按标签），非实例化 GA 避免用 `CancelAllAbilities`**，确保取消逻辑无遗漏、不影响其他技能。
+
+### 4.6.6 获取激活的Ability
+
+**对文中该部分代码的解释**：
+
+`UAbilitySystemComponent::GetActivatableGameplayAbilitySpecsByAllMatchingTags` 是 GAS 中一个用于**按标签筛选 “可激活的 `GameplayAbility` 规格（`FGameplayAbilitySpec`）”** 的核心函数，它能帮助你快速定位符合特定标签条件的技能，在批量技能管理、逻辑联动等场景中非常实用。
+
+#### 一、函数作用与参数解析
+
+##### 核心作用：
+
+从 `ASC` 的 `ActivatableAbilities` 列表中，筛选出**所有标签完全匹配指定标签容器**的 `FGameplayAbilitySpec`（技能规格），并返回这些规格的指针数组。
+简单说：“找出所有带有我要的标签的可激活技能规格”。
+
+##### 参数详解：
+
+```cpp
+void GetActivatableGameplayAbilitySpecsByAllMatchingTags(
+    const FGameplayTagContainer& GameplayTagContainer,  // 1. 要匹配的标签容器
+    TArray<struct FGameplayAbilitySpec*>& MatchingGameplayAbilities,  // 2. 输出参数：匹配的技能规格数组
+    bool bOnlyAbilitiesThatSatisfyTagRequirements = true  // 3. 是否仅包含满足标签需求的技能
+)
+```
+
+1. **`GameplayTagContainer`**：
+   筛选的 “标签条件”—— 只有**同时包含该容器中所有标签**的技能规格才会被匹配（“全包含” 逻辑，而非 “任一包含”）。
+   例如：容器包含 `Tag.Ability.Type.Attack` 和 `Tag.Ability.Damage.Fire`，则只会匹配同时带有这两个标签的技能。
+2. **`MatchingGameplayAbilities`**：
+   输出参数（引用传递）—— 函数执行后，会将所有匹配的 `FGameplayAbilitySpec*` 存入该数组，供后续逻辑使用（如激活、取消、查询状态等）。
+3. **`bOnlyAbilitiesThatSatisfyTagRequirements`**：
+   可选参数（默认 `true`）—— 若为 `true`，则仅返回 “满足自身标签需求（`TagRequirements`）” 的技能规格。
+   - 技能的 `TagRequirements` 是在 `UGameplayAbility` 中定义的 “激活前置标签条件”（如 “必须带有 `Tag.State.Alive` 才能激活”）；
+   - 设为 `true` 时，即使技能带有目标标签，但不满足自身 `TagRequirements`，也不会被纳入结果（确保筛选出的技能 “真的可以被激活”）。
+
+#### 二、典型使用场景
+
+##### 1. 批量激活符合标签的技能
+
+例如：“战斗开始时，自动激活所有带有 `Tag.Ability.BattleStart` 和 `Tag.Ability.Passive` 的被动技能”。
+
+```cpp
+void AMyCharacter::OnBattleStart()
+{
+    if (!AbilitySystemComponent) return;
+
+    // 1. 定义要匹配的标签（战斗开始 + 被动技能）
+    FGameplayTagContainer BattlePassiveTags;
+    BattlePassiveTags.AddTag(FGameplayTag::RequestGameplayTag("Ability.BattleStart"));
+    BattlePassiveTags.AddTag(FGameplayTag::RequestGameplayTag("Ability.Passive"));
+
+    // 2. 筛选匹配的技能规格
+    TArray<FGameplayAbilitySpec*> MatchingSpecs;
+    AbilitySystemComponent->GetActivatableGameplayAbilitySpecsByAllMatchingTags(
+        BattlePassiveTags, 
+        MatchingSpecs, 
+        true  // 仅包含满足标签需求的技能
+    );
+
+    // 3. 批量激活这些技能
+    for (FGameplayAbilitySpec* Spec : MatchingSpecs)
+    {
+        if (Spec && Spec->Ability)
+        {
+            AbilitySystemComponent->TryActivateAbility(Spec->Handle);
+        }
+    }
+}
+```
+
+##### 2. 检查是否存在符合标签的激活中技能
+
+例如：“释放大招前，检查是否有带有 `Tag.Ability.Buff.DamageBoost` 的增益技能在激活中，若有则叠加伤害”。
+
+```cpp
+float UGA_Ultimate::CalculateUltimateDamage()
+{
+    float BaseDamage = 1000.0f;
+    if (!CurrentActorInfo || !CurrentActorInfo->AbilitySystemComponent) return BaseDamage;
+
+    // 1. 定义要匹配的标签（伤害增益 buff）
+    FGameplayTagContainer DamageBoostTags;
+    DamageBoostTags.AddTag(FGameplayTag::RequestGameplayTag("Ability.Buff.DamageBoost"));
+
+    // 2. 筛选匹配的技能规格
+    TArray<FGameplayAbilitySpec*> MatchingSpecs;
+    CurrentActorInfo->AbilitySystemComponent->GetActivatableGameplayAbilitySpecsByAllMatchingTags(
+        DamageBoostTags, 
+        MatchingSpecs, 
+        true
+    );
+
+    // 3. 若存在激活中的增益技能，增加伤害
+    for (FGameplayAbilitySpec* Spec : MatchingSpecs)
+    {
+        if (Spec && Spec->Ability && Spec->Ability->IsActive())
+        {
+            BaseDamage *= 1.5f; // 伤害提升 50%
+            break; // 假设只需要一个增益即可
+        }
+    }
+
+    return BaseDamage;
+}
+```
+
+##### 3. 批量取消带有特定标签的技能
+
+例如：“角色被沉默时，取消所有带有 `Tag.Ability.Type.Active` 和 `Tag.Ability.RequiresCast` 的主动施法技能”。
+
+```cpp
+void AMyCharacter::OnSilenced()
+{
+    if (!AbilitySystemComponent) return;
+
+    // 1. 定义要匹配的标签（主动技能 + 需要施法）
+    FGameplayTagContainer CastingAbilityTags;
+    CastingAbilityTags.AddTag(FGameplayTag::RequestGameplayTag("Ability.Type.Active"));
+    CastingAbilityTags.AddTag(FGameplayTag::RequestGameplayTag("Ability.RequiresCast"));
+
+    // 2. 筛选匹配的技能规格
+    TArray<FGameplayAbilitySpec*> MatchingSpecs;
+    AbilitySystemComponent->GetActivatableGameplayAbilitySpecsByAllMatchingTags(
+        CastingAbilityTags, 
+        MatchingSpecs, 
+        true
+    );
+
+    // 3. 批量取消这些技能
+    for (FGameplayAbilitySpec* Spec : MatchingSpecs)
+    {
+        if (Spec && Spec->Handle.IsValid())
+        {
+            AbilitySystemComponent->CancelAbilityHandle(Spec->Handle);
+        }
+    }
+}
+```
+
+#### 三、关键注意事项
+
+1. **“全匹配” 逻辑**：
+   函数要求技能规格**同时包含 `GameplayTagContainer` 中的所有标签**，而非 “包含任一标签”。若需要 “任一匹配”，应使用 `GetActivatableGameplayAbilitySpecsByAnyMatchingTags`（注意函数名中的 “Any”）。
+2. **`FGameplayAbilitySpec` 与 `UGameplayAbility` 的区别**：
+   函数返回的是 `FGameplayAbilitySpec*`（技能规格，包含实例化信息如等级、输入绑定），而非 `UGameplayAbility*`（技能类本身）。若需获取技能类，可通过 `Spec->Ability` 访问。
+3. **性能考量**：
+   频繁调用（如每帧）可能导致性能开销，尤其是当 `ActivatableAbilities` 列表庞大时。建议：
+   - 对高频逻辑，缓存筛选结果（如战斗开始时缓存一次，战斗结束后清空）；
+   - 减少标签容器中的标签数量（标签越多，匹配越慢）。
+4. **标签来源**：
+   技能规格的标签来自两个地方：
+   - 技能类（`UGameplayAbility`）中定义的 `AbilityTags`（静态标签）；
+   - 授予技能时通过 `FGameplayAbilitySpec` 动态添加的标签（动态标签）。
+     函数会同时检查这两类标签，确保匹配准确性。
+
+#### 总结
+
+`GetActivatableGameplayAbilitySpecsByAllMatchingTags` 是 GAS 中**按标签批量管理技能**的核心工具，它通过 “全标签匹配” 逻辑精准筛选可激活的技能规格，支持批量激活、取消、状态查询等场景。使用时需注意 “全匹配” 与 “任一匹配” 的区别，以及性能优化，确保在复杂技能系统中高效运行。
+
+### 4.6.7 实例化策略
+
+`GameplayAbility`（GA）的实例化策略是 GAS 中**控制技能实例生命周期和状态管理**的核心机制，直接影响技能的性能、状态存储能力和使用限制。三种策略的本质区别在于 “是否创建实例”“实例的复用方式” 以及 “能否存储动态状态”，下面结合实际开发场景深入解析：
+
+#### 一、按 Actor 实例化（Instanced Per Actor）：“单实例复用，状态持久化”
+
+##### 核心特点：
+
+- **实例生命周期**：每个 `AbilitySystemComponent`（ASC）中，该 GA 只会创建**一个实例**，并在多次激活之间复用（不会销毁）。
+- **状态管理**：支持存储动态状态（如变量值、冷却进度、累计数据等），且状态会在 “激活 - 结束” 循环中保留（除非手动重置）。
+- **性能**：中等（仅初始化一次实例，后续激活无实例创建开销）。
+
+##### 适用场景：
+
+这是最常用的策略，适合**需要在多次激活之间保留状态**的技能 —— 几乎所有 “有记忆性” 的技能都适用：
+
+- **角色核心技能**：如 “火球术”（需要记录 “已击中敌人次数” 来触发暴击加成）、“闪避”（需要记录 “上次闪避时间” 来计算冷却）。
+- **带成长 / 累计效果的技能**：如 “连击技能”（第一次攻击造成 100 伤害，第二次 150，需要累计连击数）。
+- **需要手动重置状态的技能**：如 “蓄力攻击”（松开按键后重置蓄力值，但下次激活时保留 “最大蓄力上限” 配置）。
+
+##### 注意事项：
+
+- 由于实例复用，技能的成员变量（如 `CurrentChargeValue`）会在多次激活之间保留，需在 `EndAbility` 或 `ActivateAbility` 中手动重置不需要的状态（避免影响下次激活）。
+- 每个 ASC 仅一个实例，因此同一角色的该技能多次激活会共享状态，但不同角色（不同 ASC）的实例相互独立（不冲突）。
+
+#### 二、按操作实例化（Instanced Per Execution）：“多实例隔离，状态重置”
+
+##### 核心特点：
+
+- **实例生命周期**：**每次激活技能时，都会创建全新的 GA 实例**，技能结束后实例被销毁（不会复用）。
+- **状态管理**：每次激活的状态（变量值、任务委托等）完全隔离，新实例的变量会使用默认值（自动重置）。
+- **性能**：较差（每次激活都有实例创建 / 销毁的开销，频繁激活会增加内存压力）。
+
+##### 适用场景：
+
+适合**每次激活需要 “全新状态” 且无需复用数据**的技能，尤其是 “一次性效果” 或 “并行激活” 的技能：
+
+- **独立触发的一次性技能**：如 “治疗脉冲”（每次激活生成一个独立的治疗圈，圈的范围、持续时间互不影响）。
+- **可叠加的瞬时技能**：如 “多重箭”（同时激活 3 次，每次生成一个独立的箭实例，各自计算飞行轨迹）。
+- **需要完全隔离逻辑的技能**：如 “召唤物技能”（每个召唤物的攻击技能实例独立，不会相互干扰）。
+
+##### 注意事项：
+
+- 由于每次激活都是新实例，无需手动重置状态（默认值自动生效），但会增加性能开销（不适合高频激活的技能，如每秒触发的普攻）。
+- 样例项目通常不使用这种策略，除非有明确的 “多实例隔离” 需求。
+
+#### 三、非实例化（Non-Instanced）：“无实例，直接操作 CDO，性能最优”
+
+##### 核心特点：
+
+- **实例生命周期**：**不创建任何实例**，所有激活逻辑直接操作 GA 的 “类默认对象（CDO）”（`UGameplayAbility::GetDefaultObject()`）。
+- **状态管理**：**完全不能存储动态状态**（CDO 是全局共享的默认对象，修改其变量会影响所有使用该 GA 的对象），也无法绑定 `AbilityTask` 的委托（委托需要实例上下文）。
+- **性能**：最优（无实例创建 / 销毁开销，直接执行逻辑）。
+
+##### 适用场景：
+
+适合**逻辑简单、无状态存储需求、且需要高频激活**的技能 —— 核心是 “无动态数据，每次激活逻辑完全一致”：
+
+- **高频简单技能**：如 MOBA 小兵的基础攻击（仅播放动画 + 应用伤害，无需记录状态）、角色的跳跃（仅触发物理力 + 播放动画，无复杂逻辑）。
+- **无变量依赖的瞬时技能**：如 “嘲讽”（仅广播一个事件 + 应用标签，不需要存储任何数据）。
+
+##### 注意事项：
+
+- **严禁存储动态状态**：任何对 CDO 变量的修改（如 `bIsJumping = true`）会影响所有使用该 GA 的角色（因为 CDO 全局共享）。
+- **无法使用 `AbilityTask` 委托**：`AbilityTask` 的回调（如动画结束、延迟完成）需要绑定到实例，非实例化 GA 没有实例，会导致委托失效或崩溃。
+- 样例项目的 “跳跃技能” 用这种策略，正因为其逻辑简单（仅触发物理跳跃）、无状态、高频使用（性能优先）。
+
+#### 四、三种策略的核心对比与选择依据
+
+| 维度                  | 按 Actor 实例化       | 按操作实例化                 | 非实例化                     |
+| --------------------- | --------------------- | ---------------------------- | ---------------------------- |
+| **实例数量**          | 每个 ASC 1 个（复用） | 每次激活 1 个（新实例）      | 0 个（直接用 CDO）           |
+| **状态存储**          | 支持（激活间保留）    | 支持（每次激活独立）         | 不支持（CDO 共享，禁止修改） |
+| **性能**              | 中等                  | 较差（高频激活压力大）       | 最优                         |
+| **`AbilityTask`支持** | 完全支持              | 完全支持                     | 不支持（无实例绑定委托）     |
+| **典型场景**          | 核心技能、带状态技能  | 一次性叠加技能、独立实例技能 | 高频简单技能（普攻、跳跃）   |
+
+#### 五、选择策略的决策流程
+
+1. **是否需要存储动态状态？**
+   - 是 → 排除 “非实例化”；
+   - 否 → 优先考虑 “非实例化”（性能最优）。
+2. **是否需要每次激活的状态完全隔离？**
+   - 是 → 选择 “按操作实例化”（适合一次性、叠加技能）；
+   - 否 → 选择 “按 Actor 实例化”（适合复用状态的技能）。
+3. **激活频率如何？**
+   - 高频激活（如每秒多次）→ 排除 “按操作实例化”（性能差）；
+   - 低频激活 → 可考虑 “按操作实例化”（隔离性优先）。
+
+#### 总结
+
+实例化策略的本质是**在 “性能”“状态管理”“逻辑隔离性” 之间做权衡**：
+
+- 大多数技能用 “按 Actor 实例化”（平衡状态需求和性能）；
+- 简单高频技能用 “非实例化”（性能优先，无状态）；
+- 少数需要完全隔离的技能用 “按操作实例化”（隔离性优先，容忍性能开销）。
+
+理解这三种策略的核心差异，才能避免 “非实例化技能尝试存储状态导致全局错误”“高频技能用按操作实例化导致卡顿” 等常见问题。
+
+### 4.6.8 网络执行策略(Net Execution Policy)
+
+文中的本节内容暂时没有看不懂的地方，有需要再补充。
+
+### 4.6.9 Ability标签
+
+文中的本节内容暂时没有看不懂的地方，有需要再补充。
+
+### 4.6.10 Gameplay Ability Spec
+
+文中的本节内容暂时没有看不懂的地方，有需要再补充。
+
+### 4.6.11 传递数据到Ability
+
+### 4.6.12 Ability花费(Cost)和冷却(Cooldown)
+
+### 4.6.13 升级Ability
+
+### 4.6.14 Ability集合
+
+### 4.6.15 Ability批处理
+
+### 4.6.16 网络安全策略(Net Security Policy)
+
+
+
+## 4.7 Ability Tasks
