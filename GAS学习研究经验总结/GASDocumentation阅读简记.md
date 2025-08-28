@@ -3081,16 +3081,482 @@ void AMyCharacter::OnSilenced()
 
 ### 4.6.11 传递数据到Ability
 
+需要时再看
+
 ### 4.6.12 Ability花费(Cost)和冷却(Cooldown)
+
+主要讲了`GA`激活之前会检查`Cost`和`Cooldown`是否支持当前`GA`的激活。
 
 ### 4.6.13 升级Ability
 
+根据是否需要在升级`GA`时中断当前`GA`而选择性的使用文中提到的两种升级方式。
+
 ### 4.6.14 Ability集合
+
+`UDataAsset`类的`GameplayAbilitySet`类，作用就是便利`GA`的统一管理使用。
 
 ### 4.6.15 Ability批处理
 
+需要时再使用。
+
 ### 4.6.16 网络安全策略(Net Security Policy)
 
-
+需要时再使用。
 
 ## 4.7 Ability Tasks
+
+### 4.7.1 AbilityTask定义
+
+`Ability Task`可以让`GA`不仅仅在一帧中执行任务，实现随时间推移而触发或响应一段时间后触发的委托操作。
+
+`UAbilityTask`的构造函数中强制硬编码允许最多1000个同时运行的`AbilityTask`, 当设计那些同时拥有数百个Character的游戏(像RTS)的`GameplayAbility`时要注意这一点.  
+
+### 4.7.2 自定义AbilityTask
+
+看文中内容即可。
+
+### 4.7.3 使用AbilityTask
+
+看文中内容即可。
+
+### 4.7.4 Root Motion Source Ability Task
+
+GAS自带的`AbilityTask`可以使用挂载在`CharacterMovementComponent`中的`Root Motion Source`随时间推移而移动`Character`, 像击退, 复杂跳跃, 吸引和猛冲。
+
+## 4.8 Gameplay Cues
+
+### 4.8.1 GameplayCue定义
+
+GameplayCue（简称 GC）是 Unreal Engine（UE）中**Gameplay Abilities 系统**的重要组成部分，专注于处理非核心游戏逻辑的表现层功能（如音效、粒子、镜头反馈等），同时具备同步性和可预测性，是实现 “功能与表现分离” 的关键工具。
+
+#### 一、GameplayCue 的核心定位与特性
+
+GC 的核心价值在于**解耦 “游戏规则逻辑”（如伤害计算、状态生效）与 “表现层反馈”（如受击火花、眩晕特效）**，让开发者无需在`GameplayEffect`（GE）或`GameplayAbility`（GA）中硬编码表现逻辑，而是通过 “标签订阅” 的方式触发效果。
+
+##### 关键特性
+
+1. **可同步性**：默认支持服务端 - 客户端同步（除非在客户端明确指定仅本地执行）；
+2. **可预测性**：遵循 UE 网络预测逻辑，避免客户端表现与服务端状态脱节；
+3. **标签驱动**：必须通过**以 “GameplayCue” 为父级的 GameplayTag**触发（如`GameplayCue.Character.Hit`），标签是 GC 的唯一标识；
+4. **订阅机制**：通过`GameplayCueNotify`对象或实现`IGameplayCueInterface`的 Actor 订阅 GC 事件，无需硬编码关联。
+
+#### 二、GameplayCue 的触发方式
+
+GC 无法主动执行，必须通过`AbilitySystemComponent`（ASC，能力系统组件）触发，核心是 “发送带 GC 标签的事件”，具体步骤如下：
+
+1. **确定 GC 标签**：创建一个有效的 GC 标签（必须以`GameplayCue`开头，例如`GameplayCue.Weapon.Shoot`）；
+
+2. 选择事件类型
+
+   ：GC 支持 3 种核心事件类型，对应不同的表现需求：
+
+   - `Execute`：一次性触发（如子弹发射音效、单次伤害火花）；
+   - `Add`：持续生效时激活（如眩晕状态的粒子特效启动）；
+   - `Remove`：持续生效结束时关闭（如眩晕状态解除，粒子停止）；
+
+3. **通过 ASC 触发**：在代码或蓝图中，通过 ASC 调用`GameplayCueManager`的对应接口（如`ExecuteGameplayCue`、`AddGameplayCue`），传入 GC 标签和触发参数（如位置、目标 Actor）。
+
+#### 三、GameplayCueNotify：GC 的事件响应载体
+
+`GameplayCueNotify`是 UE 提供的 “GC 事件处理器” 基类，分为两种核心类型，分别对应不同的使用场景，需根据 “效果是否需要持续实例化” 选择。
+
+##### 两种 GameplayCueNotify 类对比
+
+| 类名（Class）                         | 支持的事件  | 适配的 GameplayEffect 类型               | 核心特点                                                     | 适用场景                                                     |
+| ------------------------------------- | ----------- | ---------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
+| **GameplayCueNotify_Static**（静态）  | Execute     | Instant（瞬时）、Periodic（周期性）      | - 无实例化，直接操作`ClassDefaultObject`（CDO） - 性能开销低，仅触发一次 | 一次性表现（如：子弹命中火花、单次伤害音效、暴击镜头抖动）   |
+| **GameplayCueNotify_Actor**（实例化） | Add、Remove | Duration（持续时长）、Infinite（无限期） | - 触发 Add 时生成实例，触发 Remove 时销毁（需手动配置） - 支持实例化状态管理（如粒子播放进度） - 可限制同时存在的实例数量 | 持续性表现（如：角色奔跑时的脚步声循环、眩晕状态的环绕粒子、中毒持续掉血的特效） |
+
+##### 关键使用注意事项
+
+- **GameplayCueNotify_Actor 必须勾选 “Auto Destroy on Remove”**：若不勾选，Remove 事件触发后实例不会销毁，后续再调用 Add 时无法生成新实例，导致表现失效；
+- **事件重写**：两种类均需在蓝图 / 代码中重写对应事件（如`OnExecute`、`OnAdd`、`OnRemove`），在事件中编写具体表现逻辑（如 Spawn 粒子、播放 Sound）；
+- **标签绑定**：每个`GameplayCueNotify`需在细节面板（Details）中绑定对应的 “GameplayCueTag”，才能接收该标签的 GC 事件。
+
+#### 四、网络同步与客户端优化
+
+GC 的同步行为与 ASC 的**同步模式（Replication Mode）** 强相关，需注意服务端与客户端的触发次数差异，避免表现重复或缺失。
+
+##### 1. 同步模式对 GC 的影响
+
+当 ASC 使用非 “Full” 同步模式（如 “Minimal” 或 “None”）时：
+
+- 服务端（Listen Server，监听服务器）：`Add`和事件会触发两次：
+  1. 第一次：服务端本地应用 GE 时触发；
+  2. 第二次：通过 “Minimal NetMultiCast” 同步到客户端时，服务端自身也会响应；
+- **客户端**：所有 GC 事件（Execute/Add/Remove）仅触发**一次**；
+- **例外**：`WhileActive`事件（持续生效中的帧更新）在服务端和客户端均仅触发一次。
+
+#### 2. 客户端本地触发优化（关键性能点）
+
+对于 “客户端本地可见、无需服务端同步” 的表现（如角色自身的呼吸粒子、本地 UI 反馈），无需通过服务端 GE 触发 GC，可直接在客户端调用`ASC->ExecuteGameplayCueLocal`（本地执行），避免网络开销。
+
+**示例场景**：
+
+- 错误做法：服务端发送 “呼吸 GC” 标签，同步到客户端触发粒子；
+- 正确做法：客户端检测角色是否存活，直接本地调用 “呼吸 GC”，无需服务端参与。
+
+#### 五、样例项目参考（官方 / 常见实践）
+
+UE 官方样例项目（如`ActionRPG`、`LyraStarterGame`）中，GC 的使用符合上述规范，典型案例如下：
+
+| 样例功能     | GC 类型                  | 触发方式                           | 核心逻辑                                                     |
+| ------------ | ------------------------ | ---------------------------------- | ------------------------------------------------------------ |
+| 眩晕状态特效 | GameplayCueNotify_Actor  | GE（Duration 类型）触发 Add/Remove | - Add 事件：Spawn 眩晕环绕粒子、播放耳鸣音效 - Remove 事件：停止粒子、恢复音效 |
+| 枪支伤害反馈 | GameplayCueNotify_Static | GA 触发 Execute 事件               | - 子弹命中时，服务端调用 Execute，同步触发火花粒子 + 撞击音效 - 客户端本地补充镜头微抖（无需同步） |
+| 奔跑脚步声   | GameplayCueNotify_Actor  | 角色移动状态触发 Add/Remove        | - Add（奔跑时）：循环播放脚步声，限制 1 个实例 - Remove（停止奔跑）：停止音效，销毁实例 |
+
+#### 六、总结与核心避坑点
+
+1. **标签合法性**：GC 标签必须以`GameplayCue`开头，否则无法触发（如`Cue.Character.Hit`是无效标签）；
+2. **实例销毁**：GameplayCueNotify_Actor 务必勾选 “Auto Destroy on Remove”，否则实例残留导致后续 Add 失效；
+3. **网络次数**：Listen Server 的 Add/Remove 事件会触发两次，需在代码中判断`IsLocalController()`，避免重复表现；
+4. **本地优先**：非关键同步的表现（如 UI 反馈、本地粒子）优先用`Local`接口，减少网络开销。
+
+通过合理使用 GC，可让游戏的 “表现层逻辑” 更模块化、易维护，同时兼顾网络同步的稳定性与客户端性能。
+
+### 4.8.2 触发GameplayCue
+
+下面是对文中本节内容**手动调用GC**这一部分所示代码的解释：
+
+这些函数是手动控制 GC 的主要接口，补充了通过`GameplayEffect`（GE）间接触发 GC 的方式。
+
+#### 函数功能解析
+
+##### 1. 一次性触发类（Execute）
+
+```cpp
+// 执行一次性GC，可传递效果上下文（如命中结果、源/目标信息）
+void ExecuteGameplayCue(const FGameplayTag GameplayCueTag, 
+                       FGameplayEffectContextHandle EffectContext = FGameplayEffectContextHandle());
+
+// 执行一次性GC，通过专用参数结构体传递更详细的配置（如位置、旋转、缩放）
+void ExecuteGameplayCue(const FGameplayTag GameplayCueTag, 
+                       const FGameplayCueParameters& GameplayCueParameters);
+```
+
+- **用途**：触发`GameplayCueNotify_Static`的`OnExecute`事件，适合一次性表现（如子弹命中火花、技能释放音效）。
+- **特点**：执行后无残留，不占用 GC 实例，参数可灵活传递触发时的上下文信息（如伤害位置、击中的 Actor）。
+
+##### 2. 持续性添加类（Add）
+
+```cpp
+// 添加持续性GC，可传递效果上下文
+void AddGameplayCue(const FGameplayTag GameplayCueTag, 
+                   FGameplayEffectContextHandle EffectContext = FGameplayEffectContextHandle());
+
+// 添加持续性GC，通过专用参数结构体配置
+void AddGameplayCue(const FGameplayTag GameplayCueTag, 
+                   const FGameplayCueParameters& GameplayCueParameters);
+```
+
+- **用途**：触发`GameplayCueNotify_Actor`的`OnAdd`事件，用于启动持续性表现（如角色进入潜行状态时的隐身粒子）。
+- **特点**：会在 ASC 中注册该 GC 为 “活跃状态”，直到调用`RemoveGameplayCue`才会触发`OnRemove`事件。同一标签可被多次添加（但可通过`GameplayCueNotify_Actor`的 “实例限制” 设置控制是否重复生成）。
+
+##### 3. 持续性移除类（Remove）
+
+```cpp
+// 移除指定标签的持续性GC
+void RemoveGameplayCue(const FGameplayTag GameplayCueTag);
+
+// 移除所有通过手动添加（非GE触发）的持续性GC
+void RemoveAllGameplayCues();
+```
+
+- **用途**：终止持续性 GC 的表现（如角色退出潜行状态，停止隐身粒子）。
+- 注意：
+  - `RemoveGameplayCue`需与`AddGameplayCue`配对使用，否则可能导致`GameplayCueNotify_Actor`实例残留。
+  - `RemoveAllGameplayCues`仅移除 “手动添加” 的 GC，通过 GE 自动触发的 GC 仍由 GE 的生命周期管理（GE 过期时自动移除）。
+
+#### 关键参数说明
+
+- **`FGameplayTag GameplayCueTag`**：
+  必须是`GameplayCue.XXX`格式的有效标签（如`GameplayCue.Ability.Fireball.Explode`），用于定位对应的`GameplayCueNotify`对象。
+- **`FGameplayEffectContextHandle`**：
+  通常用于传递与游戏逻辑相关的上下文（如源 Actor、目标 Actor、命中结果`FHitResult`），可在`GameplayCueNotify`的事件中解析这些信息（如根据命中位置生成粒子）。
+- **`FGameplayCueParameters`**：
+  更专注于表现层的参数结构体，包含：
+  - 空间信息（`Location`、`Rotation`、`Scale`）：控制粒子 / 音效的生成位置和朝向；
+  - 源 / 目标 Actor 引用：用于绑定特效到特定 Actor（如角色身上的光环粒子）；
+  - 自定义数据（`OptionalObject`、`OptionalFloat`等）：传递额外配置（如粒子颜色、音效音量）。
+
+#### 典型使用场景
+
+1. **手动触发一次性特效**：
+   在角色跳跃时，直接调用`ExecuteGameplayCue`播放跳跃音效和地面灰尘粒子：
+
+   ```cpp
+   FGameplayTag JumpCueTag = UGameplayTagsManager::Get().RequestGameplayTag(FName("GameplayCue.Character.Jump"));
+   FGameplayCueParameters Params;
+   Params.Location = GetActorLocation(); // 以角色位置为中心
+   ASC->ExecuteGameplayCue(JumpCueTag, Params);
+   ```
+
+2. **手动控制持续性状态**：
+   角色进入 “狂暴模式” 时添加 GC（播放怒吼音效 + 红光粒子），退出时移除：
+
+   ```cpp
+   // 进入狂暴
+   FGameplayTag BerserkCueTag = UGameplayTagsManager::Get().RequestGameplayTag(FName("GameplayCue.State.Berserk"));
+   ASC->AddGameplayCue(BerserkCueTag);
+   
+   // 退出狂暴
+   ASC->RemoveGameplayCue(BerserkCueTag);
+   ```
+
+#### 与 GE 触发的区别
+
+- **手动调用**：**这些函数是 “主动触发”，无需依赖 GE**，适合非技能 / 状态类的表现（如交互反馈、环境音效）。
+- **网络同步**：手动在客户端调用时，仅影响本地表现；在服务端调用时，会根据 ASC 同步模式同步到客户端（可能触发服务端两次执行，如前文所述）。
+- **生命周期独立**：手动添加的 GC 需手动移除，而 GE 触发的 GC 会随 GE 的生效 / 失效自动管理。
+
+通过这些接口，开发者可以灵活控制 GC 的触发时机，实现 “逻辑与表现” 的精细化分离。
+
+### 4.8.3 客户端GameplayCue
+
+文中主要讲的还是`GC`的触发方式，只不过这里是只在客户端触发的函数，函数名尾部都会多一个`Local`，注意文中的提示：**如果某个`GameplayCue`是客户端添加的, 那么它也应该自客户端移除. 如果它是通过同步添加的, 那么它也应该通过同步移除。**  
+
+### 4.8.4 GameplayCue参数
+
+文中主要介绍了参数如何传递给手动触发的GC和通过GE触发的GC。
+
+这些参数常常用于确定声音、特效等播放或生成的位置、方向等信息。
+
+### 4.8.5 Gameplay Cue Manager
+
+#### 核心逻辑解析
+
+默认情况下，`GameplayCueManager`的行为是：
+
+1. 扫描`DefaultGame.ini`中`GameplayCueNotifyPaths`指定的路径，找到所有`GameplayCueNotify`类；
+2. 自动异步加载这些类及其引用的所有资源（粒子、音效等），无论它们是否会在游戏中实际使用。
+
+这种机制在小型项目中没问题，但在《Paragon》这类大型游戏中会导致：
+
+- 内存浪费：数百兆未使用的资源驻留内存；
+- 启动卡顿：大量资源异步加载导致启动时无响应；
+- 性能冗余：预加载的资源可能从不会被触发。
+
+#### 优化方案：按需加载`GameplayCue`
+
+通过自定义`UGameplayCueManager`子类并修改加载策略，可实现 “仅加载实际触发的`GameplayCue`”：
+
+##### 1. 步骤拆解
+
+- **指定自定义`GameplayCueManager`**：
+  在`DefaultGame.ini`中配置，让引擎使用你的子类而非默认类：
+
+  ```ini
+  [/Script/GameplayAbilities.AbilitySystemGlobals]
+  GlobalGameplayCueManagerClass="/Script/你的模块名.你的子类名"
+  ```
+
+- **重写加载控制函数**：
+  在子类中重写`ShouldAsyncLoadRuntimeObjectLibraries()`，返回`false`以禁用默认的 “全量异步加载”：
+
+  ```cpp
+  virtual bool ShouldAsyncLoadRuntimeObjectLibraries() const override
+  {
+      return false; // 关闭默认的全量异步加载
+  }
+  ```
+
+- **效果**：
+  引擎只会在`GameplayCue`首次被触发时，才加载对应的`GameplayCueNotify`及其关联资源（粒子、音效等），而非启动时全部加载。
+
+##### 2. 优缺点与适用场景
+
+| 优势                   | 潜在问题                                                     | 最佳适用场景                                                 |
+| ---------------------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
+| 大幅减少启动时内存占用 | HDD 上首次触发可能有延迟（SSD 无此问题）                     | 大型项目（如 MOBA、开放世界） 含大量`GameplayCue`但实际使用分散的场景 |
+| 加快游戏启动速度       | 编辑器中可能因粒子编译产生轻微卡顿（打包后消失）             | 资源总量大、品类多的项目                                     |
+| 避免无用资源加载       | 需要确保关键`GameplayCue`在触发前预加载（如角色出生必用特效） | 对内存敏感的平台（如主机、移动端）                           |
+
+#### 补充建议
+
+- **关键资源预加载**：对于游戏初期必然触发的`GameplayCue`（如角色出生特效），可在关卡加载时手动调用异步加载接口（如`UGameplayStatics::LoadAsset`），避免首次触发延迟。
+- **结合 SSD 优势**：如你所述，SSD 的高速随机读写可掩盖首次加载延迟，因此该优化在 HDD 平台上收益更明显。
+- **路径配置精细化**：通过`GameplayCueNotifyPaths`限制扫描路径（如只扫描`/Game/Characters`而非整个项目），进一步减少`GameplayCueManager`的扫描和管理开销。
+
+这种按需加载的思路，本质是 “空间换时间” 与 “时间换空间” 的权衡，在大型项目中是提升性能的重要实践。
+
+### 4.8.6 阻止GameplayCue响应
+
+### 4.8.7 GameplayCue批处理
+
+文中该部分内容主要介绍了GC批处理时的优化方案
+
+#### 4.8.7.1 手动RPC
+
+#### 4.8.7.2 GameplayEffect中的多个GameplayCue
+
+## 4.9 Ability System Globals
+
+### 4.9.1 InitGlobalData()
+
+#### 一、问题本质：为什么必须调用`UAbilitySystemGlobals::InitGlobalData()`？
+
+在 UE 4.24 之前，`AbilitySystem`的核心数据（如`TargetData`的`ScriptStruct`、属性配置表）会自动初始化；但从 4.24 开始，引擎将这部分初始化逻辑剥离为显式调用的`InitGlobalData()`，目的是让开发者更灵活地控制初始化时机（避免与其他系统加载顺序冲突）。
+
+如果不调用该函数，会触发两个核心问题：
+
+1. **`ScriptStructCache`错误**：`TargetData`依赖的`ScriptStruct`（如`FGameplayAbilityTargetData_SingleTargetHit`）无法被缓存到`ScriptStructCache`中，导致代码中访问`TargetData`时找不到对应的结构定义；
+2. **客户端断连**：服务端与客户端的`TargetData`序列化 / 反序列化依赖`ScriptStructCache`的一致性，缓存缺失会导致网络数据解析失败，最终客户端从服务端断开。
+
+#### 二、`UAbilitySystemGlobals::InitGlobalData()`的正确调用方式
+
+该函数只需在项目生命周期中**调用一次**，但调用位置需根据项目架构和加载顺序选择，不同方案各有优劣，以下是主流实践对比：
+
+| 调用位置                                  | 实现方式                                                     | 优点                                                         | 适用场景                                                     | 注意事项                                                     |
+| ----------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------ |
+| **`UEngineSubsystem::Initialize()`**      | 1. 创建自定义`EngineSubsystem`（继承`UEngineSubsystem`）； 2. 在`Initialize()`重写函数中调用`UAbilitySystemGlobals::InitGlobalData()`； 3. 确保`Subsystem`被引擎自动加载（在`.uplugin`中配置`LoadingPhase=PreDefault`）。 | - 加载时机早，能覆盖大多数系统的初始化需求； - 符合 UE “Subsystem” 的模块化设计，代码整洁。 | 大多数普通项目（无特殊`AssetManager`或`GlobalAttributeDefaultsTable`依赖）； 样例项目推荐方案。 | 若项目使用`GlobalAttributeDefaultsTables`（全局属性默认表），可能因`Subsystem`加载顺序早于`EditorSubsystem`导致崩溃（下文会解决）。 |
+| **`UEngine::Init()`**                     | 1. 自定义`Engine`类（继承`UEngine`）； 2. 在`Init()`函数中调用`UAbilitySystemGlobals::InitGlobalData()`； 3. 在`DefaultEngine.ini`中指定自定义`Engine`类： `[/Script/Engine.Engine] EngineClass=/Script/你的模块名.你的Engine类`。 | - 初始化时机极早，能确保在所有`AbilitySystem`相关逻辑前执行； 适合需要深度定制引擎初始化流程的项目。 | Paragon 等大型项目； 需自定义引擎逻辑的场景。                | 实现成本较高（需重写`Engine`类），普通项目无需使用。         |
+| **`AssetManager::StartInitialLoading()`** | 1. 自定义`AssetManager`（继承`UAssetManager`）； 2. 在`StartInitialLoading()`（资源加载起始函数）中调用`UAbilitySystemGlobals::InitGlobalData()`； 3. 在`DefaultEngine.ini`中指定自定义`AssetManager`： `[/Script/Engine.Engine] AssetManagerClassName=/Script/你的模块名.你的AssetManager类`。 | - 能确保在`GlobalAttributeDefaultsTables`（依赖资源加载）初始化前执行； 解决`Subsystem`加载顺序导致的崩溃问题。 | Fortnite 等依赖`AssetManager`管理全局资源的项目； 使用`GlobalAttributeDefaultsTables`后出现崩溃的项目。 | 依赖`AssetManager`的加载逻辑，若项目未自定义`AssetManager`，需先实现基础框架。 |
+| **`GameInstance::Init()`**                | 1. 自定义`GameInstance`（继承`UGameInstance`）； 2. 在`Init()`函数中调用`UAbilitySystemGlobals::InitGlobalData()`； 3. 在`DefaultEngine.ini`中指定自定义`GameInstance`： `[/Script/Engine.Engine] GameInstanceClass=/Script/你的模块名.你的GameInstance类`。 | - 加载时机晚于`Subsystem`，但能确保`EditorSubsystem`已初始化； 适合解决 “`Subsystem`加载顺序导致的`GlobalAttributeDefaultsTables`崩溃”。 | 项目使用`GlobalAttributeDefaultsTables`且在`Subsystem`中调用崩溃时； 依赖`GameInstance`初始化流程的项目。 | 若项目有早于`GameInstance`初始化的`AbilitySystem`逻辑（如引擎启动阶段的测试代码），可能因初始化晚导致错误。 |
+
+#### 三、崩溃解决方案：`GlobalAttributeDefaultsTables`引发的加载顺序问题
+
+当使用`AbilitySystemGlobals`的`GlobalAttributeSetDefaultsTableNames`（全局属性默认表名列表）时，若在`UEngineSubsystem::Initialize()`中调用`InitGlobalData()`，可能因 **`EngineSubsystem`加载早于`EditorSubsystem`** 导致崩溃 —— 核心原因是：
+`GlobalAttributeDefaultsTables`需要`EditorSubsystem`（编辑器子系统）来绑定`InitGlobalData()`中的委托（如属性表加载完成后的回调），而`EngineSubsystem`的初始化时机早于`EditorSubsystem`，导致委托绑定失败，触发空指针崩溃。
+
+##### 解决步骤：
+
+1. **确认崩溃原因**：若崩溃调用栈中包含`UAbilitySystemGlobals::InitGlobalData()`和`GlobalAttributeDefaultsTables`相关代码，即可判定为加载顺序问题；
+
+2. 更换调用位置：将`UAbilitySystemGlobals::InitGlobalData()`从`UEngineSubsystem::Initialize()`迁移到以下位置（二选一）：
+
+   - 方案 1：`AssetManager::StartInitialLoading()`
+
+     （推荐，贴合 Fortnite 实践）：
+
+     ```cpp
+     void UMyAssetManager::StartInitialLoading()
+     {
+         Super::StartInitialLoading();
+         // 初始化AbilitySystem全局数据
+         UAbilitySystemGlobals::InitGlobalData();
+     }
+     ```
+
+   - 方案 2：`GameInstance::Init()`：
+
+     ```cpp
+     void UMyGameInstance::Init()
+     {
+         Super::Init();
+         // 初始化AbilitySystem全局数据
+         UAbilitySystemGlobals::InitGlobalData();
+     }
+     ```
+
+3. **验证加载顺序**：确保`AssetManager`或`GameInstance`的初始化时机晚于`EditorSubsystem`（UE 默认如此，无需额外配置），此时`GlobalAttributeDefaultsTables`能正常绑定委托，崩溃问题解决。
+
+#### 四、模板代码：直接复用的初始化实现
+
+为避免重复踩坑，以下提供两种场景的模板代码，可直接复制到项目中使用：
+
+##### 场景 1：普通项目（无`GlobalAttributeDefaultsTables`）——`EngineSubsystem`实现
+
+```cpp
+// 1. 头文件（MyAbilitySystemSubsystem.h）
+#include "CoreMinimal.h"
+#include "Subsystems/EngineSubsystem.h"
+#include "MyAbilitySystemSubsystem.generated.h"
+
+UCLASS()
+class YOUR_PROJECT_NAME_API UMyAbilitySystemSubsystem : public UEngineSubsystem
+{
+    GENERATED_BODY()
+
+public:
+    virtual void Initialize(FSubsystemCollectionBase& Collection) override;
+    virtual void Deinitialize() override;
+};
+
+// 2. 源文件（MyAbilitySystemSubsystem.cpp）
+#include "MyAbilitySystemSubsystem.h"
+#include "AbilitySystemGlobals.h"
+
+void UMyAbilitySystemSubsystem::Initialize(FSubsystemCollectionBase& Collection)
+{
+    Super::Initialize(Collection);
+    // 初始化AbilitySystem全局数据（UE 4.24+必需）
+    UAbilitySystemGlobals::InitGlobalData();
+}
+
+void UMyAbilitySystemSubsystem::Deinitialize()
+{
+    Super::Deinitialize();
+    // 无需额外清理，引擎自动处理
+}
+
+// 3. 配置.uplugin文件（确保Subsystem被加载）
+"Modules": [
+    {
+        "Name": "YOUR_PROJECT_NAME",
+        "Type": "Runtime",
+        "LoadingPhase": "PreDefault",
+        "Subsystems": [
+            {
+                "Class": "MyAbilitySystemSubsystem",
+                "AutoCreate": true
+            }
+        ]
+    }
+]
+```
+
+##### 场景 2：使用`GlobalAttributeDefaultsTables`——`AssetManager`实现
+
+```cpp
+// 1. 头文件（MyAssetManager.h）
+#include "CoreMinimal.h"
+#include "AssetManager/AssetManager.h"
+#include "MyAssetManager.generated.h"
+
+UCLASS()
+class YOUR_PROJECT_NAME_API UMyAssetManager : public UAssetManager
+{
+    GENERATED_BODY()
+
+public:
+    virtual void StartInitialLoading() override;
+};
+
+// 2. 源文件（MyAssetManager.cpp）
+#include "MyAssetManager.h"
+#include "AbilitySystemGlobals.h"
+
+void UMyAssetManager::StartInitialLoading()
+{
+    Super::StartInitialLoading();
+    // 初始化AbilitySystem全局数据（解决GlobalAttributeDefaultsTables崩溃）
+    UAbilitySystemGlobals::InitGlobalData();
+}
+
+// 3. 配置DefaultEngine.ini（指定自定义AssetManager）
+[/Script/Engine.Engine]
+AssetManagerClassName="/Script/YOUR_PROJECT_NAME.MyAssetManager"
+```
+
+#### 总结
+
+UE 4.24 + 中`UAbilitySystemGlobals::InitGlobalData()`是`TargetData`和`AbilitySystem`正常工作的 “必选项”，核心要点如下：
+
+1. **调用时机**：只需一次，但需根据是否使用`GlobalAttributeDefaultsTables`选择位置（`Subsystem`或`AssetManager/GameInstance`）；
+2. **崩溃规避**：若因`GlobalAttributeDefaultsTables`崩溃，优先迁移到`AssetManager`中调用；
+3. **模板复用**：直接使用上述模板代码，可避免 90% 以上的`TargetData`相关错误（如`ScriptStructCache`、客户端断连）。
+
+这一配置是`AbilitySystem`模块从 “自动初始化” 到 “显式控制” 的关键过渡，理解加载顺序逻辑后，能更灵活地适配不同项目架构。
+
+## 4.10 预测(Prediction)
+
+### 4.10.1
+
+### 4.10.2
+
+### 4.10.3
+
+### 4.10.4
+
+### 4.10.5
