@@ -3560,3 +3560,660 @@ UE 4.24 + 中`UAbilitySystemGlobals::InitGlobalData()`是`TargetData`和`Ability
 ### 4.10.4
 
 ### 4.10.5
+
+## 4.11 Targeting
+
+### 4.11.1 Target Data
+
+`FGameplayAbilityTargetData` 和 `FGameplayAbilityTargetDataHandle` 是 GAS 中**跨网络传递目标数据**的核心工具，解决了 “技能目标信息（如选中的敌人、点击的位置）在客户端与服务器间可靠同步” 的关键问题。下面从 “核心作用”“结构设计”“使用流程” 三个维度解析，帮你彻底理解其工作原理和实践价值：
+
+#### 一、核心价值：解决 “目标数据跨网络同步” 的痛点
+
+在多人游戏中，技能的 “目标选择” 通常在客户端完成（如玩家点击敌人或地面），但技能的实际生效（如造成伤害、施加效果）需要在服务器执行。这就需要一种机制：
+
+1. 客户端将 “目标信息”（如敌人引用、位置坐标）打包；
+2. 可靠地同步到服务器；
+3. 服务器解析并使用这些数据执行技能逻辑。
+
+`FGameplayAbilityTargetData`（简称 `TargetData`）及其容器 `FGameplayAbilityTargetDataHandle`（简称 `TargetDataHandle`）就是为此设计的 —— 它们提供了**类型安全、支持多态、可网络序列化**的目标数据传递方案。
+
+#### 二、`FGameplayAbilityTargetData`：目标数据的 “原子单元”
+
+##### 1. 基础特性：
+
+- **抽象基类**：不能直接实例化，必须使用其派生类（GAS 提供了多个开箱即用的派生类，也可自定义）。
+- **网络序列化**：内置 `NetSerialize` 方法，确保数据能在客户端与服务器间正确同步。
+- **多态支持**：可存储多种类型的目标信息（实体、位置、碰撞结果等），通过继承扩展自定义数据。
+
+##### 2. 常用派生类（GAS 内置）：
+
+GAS 在 `GameplayAbilityTargetTypes.h` 中提供了几种常用实现，覆盖大部分基础需求：
+
+| 派生类                                       | 用途                                | 核心数据示例                             |
+| -------------------------------------------- | ----------------------------------- | ---------------------------------------- |
+| `FGameplayAbilityTargetData_Actor`           | 存储单个 Actor 目标（如选中的敌人） | `TWeakObjectPtr<AActor> TargetActor`     |
+| `FGameplayAbilityTargetData_LocationInfo`    | 存储位置信息（如地面点击位置）      | `FVector Location`、`FRotator Direction` |
+| `FGameplayAbilityTargetData_SingleTargetHit` | 存储碰撞结果（如射线检测命中信息）  | `FHitResult HitResult`                   |
+| `FGameplayAbilityTargetData_MultiTargetHit`  | 存储多个碰撞结果（如范围检测命中）  | `TArray<FHitResult> HitResults`          |
+
+##### 3. 自定义 `TargetData`（扩展需求）：
+
+当内置类型不够用时（如需要传递 “目标优先级”“伤害类型” 等自定义数据），可继承 `FGameplayAbilityTargetData` 实现：
+
+```cpp
+// 1. 定义自定义 TargetData（需继承并实现序列化）
+USTRUCT()
+struct FMyCustomTargetData : public FGameplayAbilityTargetData
+{
+    GENERATED_BODY()
+
+    // 自定义数据：目标 Actor + 伤害倍率
+    UPROPERTY()
+    TWeakObjectPtr<AActor> TargetActor;
+    
+    UPROPERTY()
+    float DamageMultiplier = 1.0f;
+
+    // 必须实现网络序列化（关键！确保跨网同步）
+    virtual bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess) override
+    {
+        Super::NetSerialize(Ar, Map, bOutSuccess);
+        Ar << TargetActor;
+        Ar << DamageMultiplier;
+        bOutSuccess = true;
+        return true;
+    }
+
+    // 其他必要实现（如复制、比较）
+    virtual FMyCustomTargetData* Duplicate() const override
+    {
+        return new FMyCustomTargetData(*this);
+    }
+};
+// 注册为网络可序列化类型（关键！）
+template<>
+struct TStructOpsTypeTraits<FMyCustomTargetData> : public TStructOpsTypeTraitsBase2<FMyCustomTargetData>
+{
+    enum { WithNetSerializer = true }; // 启用网络序列化
+};
+```
+
+#### 三、`FGameplayAbilityTargetDataHandle`：`TargetData` 的 “容器与管理者”
+
+`TargetData` 通常不会单独传递，而是通过 `FGameplayAbilityTargetDataHandle` 管理，原因是：
+
+##### 1. 核心作用：
+
+- **多目标支持**：内部包含 `TArray<FGameplayAbilityTargetData*>`，可存储多个 `TargetData`（如范围技能选中的多个敌人）。
+- **多态安全**：通过指针数组存储不同派生类的 `TargetData`，确保类型信息在传递和解析时不丢失。
+- **便捷操作**：提供复制、合并、网络序列化等工具方法（如 `Append` 合并多个目标，`NetSerialize` 统一同步）。
+
+##### 2. 常用操作：
+
+```cpp
+// 1. 创建 Handle 并添加目标数据
+FGameplayAbilityTargetDataHandle CreateTargetHandle(AActor* TargetActor, float DamageMulti)
+{
+    FGameplayAbilityTargetDataHandle Handle;
+
+    // 添加自定义 TargetData
+    TSharedPtr<FMyCustomTargetData> CustomData = MakeShareable(new FMyCustomTargetData());
+    CustomData->TargetActor = TargetActor;
+    CustomData->DamageMultiplier = DamageMulti;
+    Handle.Add(CustomData);
+
+    // 也可添加内置 TargetData（如位置信息）
+    TSharedPtr<FGameplayAbilityTargetData_LocationInfo> LocationData = MakeShareable(new FGameplayAbilityTargetData_LocationInfo());
+    LocationData->Location = FVector(100, 200, 0); // 目标位置
+    Handle.Add(LocationData);
+
+    return Handle;
+}
+
+// 2. 解析 Handle 中的数据（服务器端）
+void ProcessTargetHandle(const FGameplayAbilityTargetDataHandle& Handle)
+{
+    // 遍历所有 TargetData
+    for (const auto& DataPtr : Handle.Data)
+    {
+        if (!DataPtr.IsValid()) continue;
+
+        // 区分不同类型的 TargetData（多态解析）
+        if (const auto* CustomData = static_cast<FMyCustomTargetData*>(DataPtr.Get()))
+        {
+            // 处理自定义数据（如对目标应用带倍率的伤害）
+            AActor* Target = CustomData->TargetActor.Get();
+            float FinalDamage = 100 * CustomData->DamageMultiplier;
+            ApplyDamage(Target, FinalDamage);
+        }
+        else if (const auto* LocationData = static_cast<FGameplayAbilityTargetData_LocationInfo*>(DataPtr.Get()))
+        {
+            // 处理位置数据（如在该位置生成特效）
+            SpawnEffectAtLocation(LocationData->Location);
+        }
+    }
+}
+```
+
+#### 四、典型使用流程（客户端→服务器同步目标数据）
+
+以 “玩家点击地面释放范围技能” 为例，完整流程如下：
+
+##### 1. 客户端收集目标数据：
+
+```cpp
+// 在 AbilityTask 中（如 WaitTargetData）收集玩家输入的目标位置
+void UGA_AreaBlast::ActivateAbility(...)
+{
+    Super::ActivateAbility(...);
+
+    // 创建“等待目标数据”的 Task（如玩家点击地面）
+    UAT_WaitTargetData* WaitTargetTask = UAT_WaitTargetData::Create(this, FName("AreaBlastTarget"));
+    WaitTargetTask->OnTargetDataReady.AddUObject(this, &UGA_AreaBlast::OnTargetDataReady);
+    WaitTargetTask->ReadyForActivation();
+}
+
+// 玩家选择目标后回调
+void UGA_AreaBlast::OnTargetDataReady(const FGameplayAbilityTargetDataHandle& ClientHandle)
+{
+    if (!ClientHandle.IsValid()) return;
+
+    // 客户端发送目标数据到服务器（通过 ServerRPC）
+    Server_ExecuteAreaBlast(ClientHandle);
+}
+```
+
+##### 2. 服务器接收并解析数据：
+
+```cpp
+// 服务器 RPC 处理
+UFUNCTION(Server, Reliable, WithValidation)
+void Server_ExecuteAreaBlast(const FGameplayAbilityTargetDataHandle& ServerHandle);
+
+void UGA_AreaBlast::Server_ExecuteAreaBlast_Implementation(const FGameplayAbilityTargetDataHandle& ServerHandle)
+{
+    // 解析 Handle 中的位置数据
+    for (const auto& DataPtr : ServerHandle.Data)
+    {
+        if (const auto* LocationData = static_cast<FGameplayAbilityTargetData_LocationInfo*>(DataPtr.Get()))
+        {
+            // 在目标位置应用范围伤害 GE
+            ApplyAreaDamageGE(LocationData->Location, 500.0f); // 半径 500 的范围伤害
+        }
+    }
+
+    // 技能结束
+    EndAbility(...);
+}
+```
+
+##### 3. 数据在其他系统中的传递：
+
+`TargetDataHandle` 还会被存入 `FGameplayEffectContext`（GE 上下文），使后续系统（如伤害计算、特效触发）能访问目标数据：
+
+```cpp
+// 在 GameplayEffect 的 Execution 中获取 TargetData
+void UDamageExecution::Execute_Implementation(const FGameplayEffectCustomExecutionParameters& Params)
+{
+    const FGameplayEffectContext* Context = Params.GetContext();
+    const FGameplayAbilityTargetDataHandle& TargetHandle = Context->GetTargetData();
+
+    // 使用 TargetData 计算伤害（如根据目标距离调整伤害）
+    float DistanceFactor = CalculateDistanceFactor(TargetHandle);
+    float FinalDamage = BaseDamage * DistanceFactor;
+    // ... 应用伤害
+}
+```
+
+#### 五、关键注意事项
+
+1. **网络同步的可靠性**：
+   `TargetData` 的网络序列化依赖 `NetSerialize` 实现，自定义时必须正确重写该方法，否则会出现 “客户端数据与服务器不一致” 的问题。
+2. **避免存储大量数据**：
+   `TargetData` 主要用于传递 “目标定位信息”，不应存储大体积数据（如纹理、复杂模型），否则会增加网络带宽消耗。
+3. **多态解析的安全性**：
+   解析时需用 `static_cast` 并检查指针有效性（`DataPtr.IsValid()`），避免因类型不匹配导致崩溃。
+4. **与 Target Actor 配合使用**：
+   复杂目标选择（如扇形检测、障碍物过滤）通常通过 `Target Actor`（如 `ATargetActor_SphereTrace`）完成，其 `GetTargetData()` 方法会直接返回 `TargetDataHandle`，无需手动创建。
+
+#### 总结
+
+`FGameplayAbilityTargetData` 和 `FGameplayAbilityTargetDataHandle` 是 GAS 中**目标数据传递的 “标准协议”**：
+
+- `TargetData` 负责 “存储具体目标信息”，支持多态和网络同步；
+- `TargetDataHandle` 负责 “管理多个目标数据”，提供便捷的容器操作；
+- 二者配合，解决了 “客户端选目标、服务器执行” 的核心同步问题，是实现技能目标逻辑的基础。
+
+理解并正确使用这两个结构，能让你的技能系统在多人环境下更可靠、更灵活。
+
+### 4.11.2 Target Actor
+
+`TargetActor`（`AGameplayAbilityTargetActor`）是 GAS 中**可视化目标选择过程、捕获目标数据**的核心组件，它与 `WaitTargetData` 系列 `AbilityTask` 配合，解决了 “技能如何让玩家直观选择目标（如地面区域、敌人）并同步数据” 的问题。下面从 “核心作用”“使用流程”“关键机制”“优化方案” 四个维度，结合实际场景解析：
+
+#### 一、核心作用：连接 “玩家交互” 与 “目标数据”
+
+`TargetActor` 的本质是 “目标选择的中间层”，主要做三件事：
+
+1. **可视化反馈**：通过静态网格、贴花、光标（Reticle）等组件，让玩家直观看到 “当前选中的目标范围 / 位置”（如陨石技能的地面伤害区域贴花）；
+2. **目标数据捕获**：通过射线检测、范围重叠检测（Overlap）等逻辑，实时获取目标信息（如选中的敌人、点击的地面坐标）；
+3. **交互响应**：根据玩家输入（确认 / 取消）或预设规则，将捕获的目标数据打包为 `TargetData`，传递给 `GameplayAbility` 或 `GameplayEffect`。
+
+#### 二、基础使用流程：从创建到数据传递
+
+以 “玩家点击地面释放陨石技能” 为例，`TargetActor` 与 `WaitTargetData` 的配合流程如下：
+
+##### 1. 选择 / 创建 `TargetActor` 子类
+
+GAS 提供了多个开箱即用的 `TargetActor`，覆盖常见场景：
+
+- **`AGameplayAbilityTargetActor_GroundTrace`**：地面射线检测，适合 “地面区域技能”（如陨石、治疗阵），自带地面贴花可视化；
+- **`AGameplayAbilityTargetActor_ActorTrace`**：实体射线检测，适合 “单体目标技能”（如狙击、指向性伤害）；
+- **`AGameplayAbilityTargetActor_SphereTrace`**：球形范围检测，适合 “范围选中多个敌人”（如 AOE 伤害）。
+
+若默认类型不满足需求（如自定义检测形状），可继承 `AGameplayAbilityTargetActor` 实现自定义逻辑（如胶囊体检测、扇形检测）。
+
+##### 2. 在 `GameplayAbility` 中通过 `WaitTargetData` 调用
+
+`WaitTargetData` 是触发 `TargetActor` 的 `AbilityTask`，核心是 “生成 `TargetActor` 实例 → 等待玩家交互 → 接收目标数据”。
+
+**蓝图示例**（陨石技能）：
+
+1. 在 GA 蓝图的 `ActivateAbility` 中，添加 **`Wait Target Data`** 节点；
+2. 节点参数配置：
+   - **`Target Actor Class`**：选择 `AGameplayAbilityTargetActor_GroundTrace`；
+   - **`Confirmation Type`**：选择 `UserConfirmed`（需要玩家点击确认目标）；
+   - **`Reticle Class`**：选择自定义光标（如 “陨石落点光标”，可选）；
+   - **`Filter`**：设置过滤规则（如忽略友方单位，可选）；
+3. 绑定 `On Target Data Ready` 回调（接收目标数据）和 `On Target Data Cancelled` 回调（处理取消逻辑）。
+
+**代码示例**：
+
+```cpp
+void UGA_Meteor::ActivateAbility(const FGameplayAbilitySpecHandle& Handle, const FGameplayAbilityActorInfo* ActorInfo, const FGameplayAbilityActivationInfo& ActivationInfo, const FGameplayEventData* TriggerEventData)
+{
+    Super::ActivateAbility(Handle, ActorInfo, ActivationInfo, TriggerEventData);
+
+    // 1. 创建 WaitTargetData Task
+    UAT_WaitTargetData* WaitTargetTask = UAT_WaitTargetData::Create(
+        this, 
+        FName("MeteorTarget"),  // Task 实例名
+        AGameplayAbilityTargetActor_GroundTrace::StaticClass()  // TargetActor 类
+    );
+
+    // 2. 配置 TargetActor 参数（如地面贴花、检测距离）
+    if (WaitTargetTask->TargetActor)
+    {
+        AGameplayAbilityTargetActor_GroundTrace* GroundTargetActor = Cast<AGameplayAbilityTargetActor_GroundTrace>(WaitTargetTask->TargetActor);
+        if (GroundTargetActor)
+        {
+            GroundTargetActor->SetTraceDistance(5000.0f);  // 射线检测最大距离
+            GroundTargetActor->SetDecalMaterial(MeteorDecalMaterial);  // 地面贴花材质
+            GroundTargetActor->SetDecalSize(FVector(300.0f));  // 贴花大小（伤害范围）
+        }
+    }
+
+    // 3. 绑定回调：目标确认时执行
+    WaitTargetTask->OnTargetDataReady.AddUObject(this, &UGA_Meteor::OnTargetConfirmed);
+    // 绑定回调：目标取消时执行
+    WaitTargetTask->OnTargetDataCancelled.AddUObject(this, &UGA_Meteor::OnTargetCancelled);
+
+    // 4. 激活 Task
+    WaitTargetTask->ReadyForActivation();
+}
+
+// 目标确认：接收 TargetData 并执行技能
+void UGA_Meteor::OnTargetConfirmed(const FGameplayAbilityTargetDataHandle& TargetDataHandle)
+{
+    if (!HasAuthority()) return;
+
+    // 解析 TargetData 中的地面位置
+    if (const auto* LocationData = static_cast<FGameplayAbilityTargetData_LocationInfo*>(TargetDataHandle.Data[0].Get()))
+    {
+        FVector MeteorLocation = LocationData->Location;
+        // 在目标位置生成陨石（Spawn Actor + 应用伤害 GE）
+        SpawnMeteor(MeteorLocation);
+    }
+
+    EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, false, false);
+}
+
+// 目标取消：终止技能
+void UGA_Meteor::OnTargetCancelled(const FGameplayAbilityTargetDataHandle& TargetDataHandle)
+{
+    EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, false);
+}
+```
+
+##### 3. 玩家交互与数据同步
+
+根据 `Confirmation Type` 的不同，玩家交互方式和数据同步逻辑也不同（核心机制见下文）：
+
+- 若为 `UserConfirmed`：玩家点击鼠标确认后，`TargetActor` 生成 `TargetData`，通过 `WaitTargetData` 传递给 GA；
+- 若为 `Instant`：无需玩家确认，`TargetActor` 立即生成 `TargetData` 并销毁（适合 “瞬发指向性技能”，如普攻射线检测）。
+
+#### 三、关键机制解析
+
+##### 1. 确认类型（`EGameplayTargetingConfirmation::Type`）：控制玩家交互方式
+
+`Confirmation Type` 决定了 “何时确认目标并生成 `TargetData`”，是 `TargetActor` 交互逻辑的核心：
+
+| 确认类型        | 触发时机                                                     | 适用场景                                     |
+| --------------- | ------------------------------------------------------------ | -------------------------------------------- |
+| `Instant`       | 无需交互，`TargetActor` 生成后立即生成 `TargetData` 并销毁，不执行 `Tick` | 瞬发无交互技能（如自动瞄准的普攻、范围检测） |
+| `UserConfirmed` | 玩家按下 “确认键”（如鼠标左键）或调用 `ASC->TargetConfirm()` 时触发 | 需要玩家选择目标的技能（如陨石、治疗阵）     |
+| `Custom`        | 由 GA 手动调用 `ConfirmTaskByInstanceName()` 触发            | 自定义交互逻辑（如长按蓄力后确认）           |
+| `CustomMulti`   | 支持多次确认（不销毁 `TargetActor`），需手动调用确认 / 取消  | 多目标选择技能（如连续标记多个敌人）         |
+
+**注意**：部分 `TargetActor` 不支持所有确认类型（如 `AGameplayAbilityTargetActor_GroundTrace` 不支持 `Instant`），需提前测试。
+
+##### 2. 网络同步逻辑：客户端与服务器的目标数据一致性
+
+`TargetActor` 默认**不可同步**，但可通过配置实现 “客户端选目标、服务器校验 / 生成数据”，避免作弊：
+
+| 同步模式（`ShouldProduceTargetDataOnServer`） | 逻辑流程                                                     | 优缺点                                                       |
+| --------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
+| `false`（客户端生成数据）                     | 1. 客户端 `TargetActor` 捕获数据； 2. 玩家确认后，客户端通过 RPC 将 `TargetData` 发送到服务器； 3. 服务器接收并校验数据（防作弊）。 | 优点：客户端响应快； 缺点：需服务器校验（如判断目标是否在合理范围）。 |
+| `true`（服务器生成数据）                      | 1. 客户端 `TargetActor` 仅做可视化，不捕获数据； 2. 玩家确认后，客户端发送 “确认 RPC” 到服务器； 3. 服务器执行检测生成 `TargetData` 并执行技能。 | 优点：数据绝对可靠（无作弊）； 缺点：客户端可能有延迟（预测误差）。 |
+
+**防作弊建议**：对 “伤害、治疗” 等敏感技能，优先用 `ShouldProduceTargetDataOnServer = true`，或在服务器端对客户端发送的 `TargetData` 做严格校验（如 “目标是否在技能射程内”“是否有障碍物遮挡”）。
+
+##### 3. 可视化组件：Reticle 与 Decal
+
+`TargetActor` 通过两种方式提供可视化反馈：
+
+- **`GameplayAbilityWorldReticle`（光标）**：跟随鼠标 / 视野的动态光标（如 “准星”“选中框”），通过 `Reticle Class` 参数配置，适合 “单体目标选中”；
+- **`Decal`（贴花）**：静态贴在地面 / 物体表面的纹理（如陨石伤害范围、治疗圈），默认 `GroundTrace` 类自带，可通过 `SetDecalMaterial` 自定义，适合 “区域目标可视化”。
+
+若需更复杂的可视化（如动态粒子效果），可在自定义 `TargetActor` 中添加 `UParticleSystemComponent` 并在 `Tick` 中更新位置。
+
+#### 四、性能优化与进阶技巧
+
+##### 1. 优化 `TargetActor` 的 `Tick` 开销
+
+`Non-Instant` 类型的 `TargetActor` 会在 `Tick` 中频繁执行检测（如射线 / Overlap），高频调用可能导致性能问题，优化方案：
+
+- **降低 `Tick` 频率**：在自定义 `TargetActor` 中重写 `Tick`，通过定时器控制检测间隔（如每 0.05 秒检测一次，而非每帧）；
+- **减少检测复杂度**：简化检测形状（如用射线代替球形 Overlap）、缩小检测范围、减少过滤逻辑；
+- **复用 `TargetActor`**：默认 `WaitTargetData` 每次调用都会创建 / 销毁 `TargetActor`，高频技能（如全自动射击）可自定义 `AbilityTask` 复用实例（参考 GASShooter 的 `WaitTargetDataWithReusableActor`）。
+
+##### 2. 自定义 `TargetActor`：实现特殊需求
+
+当默认 `TargetActor` 不满足需求时（如扇形检测、持久化目标），可继承 `AGameplayAbilityTargetActor` 扩展：
+
+**示例：持久化目标（记住最后有效目标）**
+默认 `TargetActor` 会在目标离开检测范围后失效，若需 “记住最后选中的目标”（如制导导弹），可在自定义类中添加变量存储：
+
+```cpp
+class AMyPersistentTargetActor : public AGameplayAbilityTargetActor
+{
+    GENERATED_BODY()
+
+public:
+    virtual void Tick(float DeltaSeconds) override
+    {
+        Super::Tick(DeltaSeconds);
+
+        // 执行检测
+        TArray<FHitResult> Hits;
+        PerformTrace(Hits);
+
+        // 若检测到有效目标，更新持久化目标
+        if (!Hits.IsEmpty())
+        {
+            PersistentTargetHit = Hits[0];
+            bHasPersistentTarget = true;
+        }
+        // 若目标已销毁，清空持久化目标
+        else if (bHasPersistentTarget && !PersistentTargetHit.GetActor())
+        {
+            bHasPersistentTarget = false;
+        }
+    }
+
+    // 获取持久化目标数据
+    virtual FGameplayAbilityTargetDataHandle GetTargetData() const override
+    {
+        FGameplayAbilityTargetDataHandle Handle;
+        if (bHasPersistentTarget)
+        {
+            auto* HitData = new FGameplayAbilityTargetData_SingleTargetHit();
+            HitData->HitResult = PersistentTargetHit;
+            Handle.Add(HitData);
+        }
+        return Handle;
+    }
+
+private:
+    FHitResult PersistentTargetHit;  // 持久化目标的碰撞结果
+    bool bHasPersistentTarget = false;  // 是否有持久化目标
+};
+```
+
+##### 3. 目标过滤（Filter）：精准筛选有效目标
+
+`TargetActor` 的 `Filter` 参数用于过滤无效目标（如忽略友方、忽略障碍物），常用过滤规则：
+
+- **类过滤**：仅允许选中 `APawn` 或 `AEnemyCharacter` 类；
+- **标签过滤**：仅允许选中带有 `Tag.Team.Enemy` 的目标；
+- **距离过滤**：仅允许选中距离小于 1000cm 的目标。
+
+可通过 `FGameplayTargetDataFilterHandle` 配置复杂过滤逻辑，确保 `TargetData` 仅包含有效目标。
+
+#### 五、总结
+
+`TargetActor` 是 GAS 中 “目标选择体验” 的核心，其价值在于：
+
+- **可视化**：让玩家直观感知目标范围，提升操作体验；
+- **数据捕获**：标准化目标数据格式，为后续技能逻辑（如伤害、治疗）提供输入；
+- **灵活性**：支持自定义检测逻辑、交互方式和网络同步策略，适配不同类型的技能（单体 / 范围、瞬发 / 蓄力）。
+
+使用时需重点关注：
+
+1. 根据技能类型选择合适的 `TargetActor` 子类和确认类型；
+2. 针对网络同步场景，选择 “客户端生成 + 服务器校验” 或 “服务器生成” 模式，确保数据可靠；
+3. 优化 `Tick` 检测频率，避免性能开销；
+4. 复杂需求通过自定义 `TargetActor` 实现，如持久化目标、特殊检测形状。
+
+掌握 `TargetActor` 后，就能实现从 “玩家交互” 到 “技能生效” 的完整目标选择链路，让技能逻辑更直观、更可靠。
+
+### 4.11.3 TargetData过滤器
+
+用到在学
+
+### 4.11.4 Gameplay Ability World Reticles
+
+多用于通过显式图标告诉玩家当前的目标定位，看文章即可。
+
+### 4.11.5 Gameplay Effect Containers Targeting
+
+`GameplayEffectContainer`（简称 “GE 容器”）是 GAS 中一种**轻量、高效的目标定位方案**，专为 “无需玩家交互、即时生效” 的技能设计（如自动攻击、范围 AOE）。它通过预定义的定位规则快速生成 `TargetData`，避免了 `TargetActor` 的实例创建 / 销毁开销，是提升技能性能的重要工具。
+
+#### 一、核心价值：高效生成目标数据，无需玩家交互
+
+与 `TargetActor` 相比，`GameplayEffectContainer` 的设计目标完全不同：
+
+- **无需可视化**：不提供光标、贴花等玩家反馈（因为无需交互）；
+- **即时执行**：调用后立即通过预设规则（如射线检测、范围 Overlap）生成 `TargetData`；
+- **无实例开销**：基于 CDO（类默认对象）运行，不创建 `AActor` 实例，性能更优；
+- **双向生成**：客户端和服务器各自独立生成 `TargetData`（不同步），适合 “两边都需要快速计算” 的场景（如客户端预测、服务器验证）。
+
+#### 二、核心组成：`GameplayEffectContainer` 与 `TargetType`
+
+`GameplayEffectContainer` 的工作依赖两个关键部分：
+
+##### 1. `FGameplayEffectContainer` 结构体（容器定义）
+
+用于描述 “要应用的 GE” 和 “如何定位目标”，包含两个核心字段：
+
+- **`TargetTypes`**：定位规则数组（`TArray<TSubclassOf<UGameplayAbilityTargetType>>`），每个元素是一个 `TargetType` 类，定义一种定位逻辑；
+- **`TargetGameplayEffects`**：要应用到目标的 GE 数组（`TArray<FGameplayEffectSpecHandle>`），定位完成后会将这些 GE 应用到目标身上。
+
+##### 2. `UGameplayAbilityTargetType` 类（定位规则）
+
+这是定位逻辑的实际实现者，GAS 提供了基础类，你可以通过继承扩展自定义规则。其核心函数是 `GetTargets()`，用于生成 `TargetData`：
+
+```cpp
+// 基类虚函数：返回目标数据
+virtual void GetTargets(
+    const UGameplayAbility* Ability,
+    const FGameplayAbilityTargetDataHandle& PreFilteredData,
+    const FGameplayTagContainer* SourceTags,
+    const FGameplayTagContainer* TargetTags,
+    FGameplayTagContainer* OptionalRelevantTags,
+    TArray<FGameplayAbilityTargetDataHandle>& OutTargetData,
+    TArray<FHitResult>& OutHitResults,
+    TArray<AActor*>& OutActors) const;
+```
+
+**常用内置 / 示例 `TargetType`**：
+
+- **`URPGTargetType_Self`**（Action RPG 样例）：定位技能拥有者自身（如给自己上 buff）；
+- **`URPGTargetType_UseEventData`**：从触发技能的事件中提取目标（如碰撞事件中的被击者）；
+- **`URPGTargetType_SphereOverlap`**：以拥有者为中心做球形范围检测（如 AOE 技能）；
+- **`URPGTargetType_LineTrace`**：从枪口发射射线检测（如自动步枪普攻）。
+
+#### 三、使用流程：从定义到应用
+
+以 “自动攻击（射线检测命中敌人）” 为例，使用 `GameplayEffectContainer` 的步骤如下：
+
+##### 1. 定义 `GameplayEffectContainer`
+
+在 `GameplayAbility` 中定义容器，指定定位规则（`TargetTypes`）和要应用的 GE（如伤害 GE）：
+
+**蓝图示例**：
+
+- 在 GA 的 “Details” 面板中添加 `Gameplay Effect Containers` 数组；
+- 新增一个容器，`Target Types` 选择自定义的 `UTargetType_LineTrace`（射线检测）；
+- `Target Gameplay Effects` 添加伤害 GE（如 `GE_AttackDamage`）。
+
+**代码示例**：
+
+```cpp
+// 在 GA 类中定义容器
+UPROPERTY(EditDefaultsOnly, Category = "Attack")
+FGameplayEffectContainer AttackContainer;
+
+// 容器初始化（在构造函数或 BeginPlay 中）
+void UGA_AutoAttack::InitContainer()
+{
+    // 设置定位类型为射线检测
+    AttackContainer.TargetTypes.Add(UTargetType_LineTrace::StaticClass());
+    
+    // 添加伤害 GE
+    FGameplayEffectSpecHandle DamageGESpec = MakeOutgoingGameplayEffectSpec(UGE_AttackDamage::StaticClass());
+    AttackContainer.TargetGameplayEffects.Add(DamageGESpec);
+}
+```
+
+##### 2. 实现 `TargetType` 定位逻辑
+
+继承 `UGameplayAbilityTargetType`，重写 `GetTargets()` 实现射线检测：
+
+```cpp
+// 射线检测定位类型
+UCLASS()
+class MYGAME_API UTargetType_LineTrace : public UGameplayAbilityTargetType
+{
+    GENERATED_BODY()
+
+public:
+    virtual void GetTargets(const UGameplayAbility* Ability, const FGameplayAbilityTargetDataHandle& PreFilteredData, 
+        const FGameplayTagContainer* SourceTags, const FGameplayTagContainer* TargetTags, 
+        FGameplayTagContainer* OptionalRelevantTags, TArray<FGameplayAbilityTargetDataHandle>& OutTargetData, 
+        TArray<FHitResult>& OutHitResults, TArray<AActor*>& OutActors) const override
+    {
+        Super::GetTargets(Ability, PreFilteredData, SourceTags, TargetTags, OptionalRelevantTags, OutTargetData, OutHitResults, OutActors);
+
+        if (!Ability || !Ability->GetCurrentActorInfo()->AvatarActor.IsValid())
+            return;
+
+        // 1. 获取射线起点（如枪口）和方向（如视线方向）
+        AActor* Avatar = Ability->GetCurrentActorInfo()->AvatarActor.Get();
+        FVector StartLocation = Avatar->GetMesh()->GetSocketLocation("Muzzle"); // 枪口位置
+        FVector EndLocation = StartLocation + Avatar->GetActorForwardVector() * 1000.0f; // 10米射程
+
+        // 2. 执行射线检测
+        FCollisionQueryParams Params;
+        Params.AddIgnoredActor(Avatar); // 忽略自身
+        FHitResult HitResult;
+        if (GetWorld()->LineTraceSingleByChannel(HitResult, StartLocation, EndLocation, ECC_Visibility, Params))
+        {
+            // 3. 将命中结果打包为 TargetData
+            TSharedPtr<FGameplayAbilityTargetData_SingleTargetHit> HitData = MakeShareable(new FGameplayAbilityTargetData_SingleTargetHit());
+            HitData->HitResult = HitResult;
+            OutTargetData.Add(FGameplayAbilityTargetDataHandle(HitData));
+
+            // 4. 记录命中的Actor（供后续应用GE）
+            if (HitResult.GetActor())
+                OutActors.Add(HitResult.GetActor());
+        }
+    }
+};
+```
+
+##### 3. 在技能中应用容器
+
+通过 `ApplyGameplayEffectContainer` 函数触发定位并应用 GE：
+
+```cpp
+void UGA_AutoAttack::ActivateAbility(...)
+{
+    Super::ActivateAbility(...);
+
+    // 应用 GE 容器：自动执行定位并给目标上伤害 GE
+    FGameplayAbilityTargetDataHandle TargetDataHandle;
+    FGameplayTagContainer OptionalTags;
+    ApplyGameplayEffectContainer(AttackContainer, TargetDataHandle, OptionalTags);
+
+    EndAbility(...);
+}
+```
+
+**蓝图中**：使用 **`Apply Gameplay Effect Container`** 节点，直接传入定义好的容器即可。
+
+#### 四、与 `TargetActor` 的核心差异
+
+| 特性         | `GameplayEffectContainer`            | `TargetActor`                                  |
+| ------------ | ------------------------------------ | ---------------------------------------------- |
+| **玩家交互** | 无（自动定位，无需确认）             | 有（支持玩家确认 / 取消，依赖输入）            |
+| **可视化**   | 无（纯逻辑计算）                     | 有（光标、贴花等反馈）                         |
+| **性能**     | 高（无实例创建，基于 CDO）           | 中 / 低（需创建 Actor，`Tick`检测可能开销大）  |
+| **网络同步** | 客户端和服务器独立生成数据（不同步） | 可通过 RPC 同步客户端数据到服务器              |
+| **适用场景** | 自动攻击、范围 AOE、即时 buff/debuff | 需玩家选择目标的技能（如陨石落点、指向性技能） |
+
+#### 五、最佳实践与注意事项
+
+1. **优先用于 “无交互” 技能**：
+   如自动攻击、周期性 AOE、被动技能触发的效果等，这些场景不需要玩家选择目标，用 `GameplayEffectContainer` 可显著提升性能。
+2. **避免复杂定位逻辑**：
+   虽然可以在 `TargetType` 中实现复杂检测，但过度复杂的逻辑（如多层嵌套 Overlap、大量过滤）会抵消其性能优势，建议保持定位逻辑简洁。
+3. **网络一致性处理**：
+   由于客户端和服务器独立生成 `TargetData`，可能出现 “客户端预测命中但服务器未命中” 的情况（如网络延迟导致敌人位置不同步）。解决方案：
+   - 以服务器结果为准，客户端预测错误时回滚；
+   - 对关键效果（如伤害），仅在服务器应用，客户端只做视觉反馈。
+4. **复用 `TargetType`**：
+   将通用定位逻辑（如 “以自身为中心的球形检测”）封装为可复用的 `TargetType` 子类，避免重复开发。
+
+#### 总结
+
+`GameplayEffectContainer` 是 GAS 中 **高效处理 “无交互目标定位”** 的最佳方案，其核心优势在于 “无实例开销” 和 “即时执行”。对于自动攻击、范围 AOE 等无需玩家选择目标的技能，它比 `TargetActor` 更轻量、更高效。使用时需注意网络一致性问题，并根据技能逻辑设计合适的 `TargetType` 定位规则，平衡性能与功能需求。
+
+# 5. 常用的Abilty和Effect
+
+## 5.1
+
+## 5.2
+
+## 5.3
+
+## 5.4
+
+## 5.5
+
+## 5.6
+
+## 5.7
+
+## 5.8
+
+## 5.9
