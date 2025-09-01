@@ -4200,20 +4200,508 @@ void UGA_AutoAttack::ActivateAbility(...)
 
 # 5. 常用的Abilty和Effect
 
-## 5.1
+## 5.1 眩晕(Stun)
 
-## 5.2
+在 GAS 中实现 “眩晕状态” 的完整逻辑，需要从 “取消已有技能”“阻止新技能激活”“禁止移动” 三个维度协同处理，确保角色在眩晕期间完全失去操作能力。以下是具体实现方案，结合代码示例说明：
 
-## 5.3
+### 一、取消所有已激活的技能
 
-## 5.4
+当眩晕效果触发时（如被陨石击中），需立即终止目标角色正在运行的所有技能（如攻击、治疗、闪避等），可通过 `ASC->CancelAbilities()` 实现批量取消。
 
-## 5.5
+#### 实现步骤：
 
-## 5.6
+1. **定义眩晕标签**：在 `DefaultGameplayTags.ini` 中添加眩晕标签（如 `State.Debuff.Stun`）。
+2. **在眩晕效果中触发取消**：当眩晕标签被添加到目标时，调用 `CancelAbilities()` 取消所有技能。
 
-## 5.7
+#### 代码示例（在应用眩晕效果的地方）：
 
-## 5.8
+```cpp
+// 假设 TargetASC 是被眩晕角色的 AbilitySystemComponent
+void ApplyStunEffect(UAbilitySystemComponent* TargetASC)
+{
+    if (!TargetASC) return;
 
-## 5.9
+    // 1. 添加眩晕标签（触发技能取消和移动禁止）
+    FGameplayTag StunTag = FGameplayTag::RequestGameplayTag("State.Debuff.Stun");
+    TargetASC->AddLooseGameplayTag(StunTag);
+
+    // 2. 取消目标所有已激活的技能（忽略可能的被动技能，可选）
+    // 取消所有技能，参数：WithTags（空=所有）、WithoutTags（空=不排除）、Ignore（空=不忽略）
+    TargetASC->CancelAbilities(nullptr, nullptr, nullptr);
+
+    // 若需要保留某些技能（如“无敌被动”），可指定 Ignore 参数：
+    // TargetASC->CancelAbilities(nullptr, nullptr, UGA_GodMode::StaticClass());
+}
+```
+
+#### 关键逻辑：
+
+- `CancelAbilities()` 会遍历目标 ASC 中所有激活的技能，调用其 `EndAbility()` 并标记 `WasCancelled = true`，确保技能逻辑正确终止（如停止动画、清理任务）。
+- 若需更精细的控制（如只取消攻击类技能），可通过 `WithTags` 参数过滤（如传入 `Tag.Ability.Type.Attack`）。
+
+### 二、阻止新技能激活
+
+眩晕期间需禁止角色使用任何新技能（如普攻、大招），通过在技能的 “激活阻塞标签” 中添加眩晕标签实现。
+
+#### 实现步骤：
+
+1. **在技能中配置阻塞标签**：对所有可被眩晕打断的技能，在其 `Activation Blocked Tags` 中添加眩晕标签 `State.Debuff.Stun`。
+2. **依赖 GAS 内置检查**：GAS 在技能激活前会自动检查 `Activation Blocked Tags`，若目标拥有这些标签，`CanActivateAbility()` 会返回 `false`，阻止激活。
+
+#### 蓝图配置：
+
+- 打开目标技能蓝图（如 `GA_Attack`、`GA_Fireball`）；
+- 在 “Details 面板”→“Ability Tags”→“Activation Blocked Tags” 中，添加 `State.Debuff.Stun`。
+
+#### 代码配置（纯 C++ 技能）：
+
+```cpp
+UGA_Attack::UGA_Attack()
+{
+    // 在构造函数中添加激活阻塞标签
+    FGameplayTag StunTag = FGameplayTag::RequestGameplayTag("State.Debuff.Stun");
+    ActivationBlockedTags.AddTag(StunTag);
+}
+```
+
+#### 关键逻辑：
+
+- `Activation Blocked Tags` 是技能激活的 “黑名单”，只要目标 ASC 拥有其中任何一个标签，技能就无法激活。
+- 对无需被眩晕阻止的技能（如 “解除控制” 技能），不添加此标签即可。
+
+### 三、阻止移动
+
+眩晕期间需冻结角色移动，通过重写 `CharacterMovementComponent` 的速度计算逻辑实现。
+
+#### 实现步骤：
+
+1. **创建自定义 CharacterMovement 子类**：重写 `GetMaxSpeed()` 函数，当角色处于眩晕状态时返回 0。
+2. **在角色类中使用自定义 Movement 组件**：确保角色使用该子类控制移动。
+
+#### 代码示例（自定义 Movement 组件）：
+
+```cpp
+UCLASS()
+class MYGAME_API UStunAwareCharacterMovement : public UCharacterMovementComponent
+{
+    GENERATED_BODY()
+
+public:
+    virtual float GetMaxSpeed() const override
+    {
+        // 1. 检查角色是否拥有眩晕标签
+        if (IsStunned())
+        {
+            return 0.0f; // 眩晕时速度为 0
+        }
+
+        // 2. 非眩晕状态使用默认速度
+        return Super::GetMaxSpeed();
+    }
+
+private:
+    // 检查角色是否被眩晕（拥有眩晕标签）
+    bool IsStunned() const
+    {
+        if (!CharacterOwner) return false;
+
+        // 获取角色的 ASC
+        UAbilitySystemComponent* ASC = UAbilitySystemBlueprintLibrary::GetAbilitySystemComponent(CharacterOwner);
+        if (!ASC) return false;
+
+        // 检查是否有眩晕标签
+        FGameplayTag StunTag = FGameplayTag::RequestGameplayTag("State.Debuff.Stun");
+        return ASC->HasMatchingGameplayTag(StunTag);
+    }
+};
+```
+
+#### 配置角色使用自定义 Movement：
+
+在角色类的构造函数中指定移动组件类：
+
+```cpp
+AMyCharacter::AMyCharacter()
+{
+    // 使用自定义的移动组件（支持眩晕检测）
+    CharacterMovement = CreateDefaultSubobject<UStunAwareCharacterMovement>(TEXT("CharacterMovement"));
+}
+```
+
+#### 关键逻辑：
+
+- `GetMaxSpeed()` 是 Character Movement 计算移动速度的核心函数，返回 0 会完全阻止角色移动（包括受外力影响的位移，如被推搡）。
+- 若需保留部分移动能力（如 “减速 90%”），可返回原速度的 10%（如 `Super::GetMaxSpeed() * 0.1f`）。
+
+### 四、完整流程与恢复逻辑
+
+眩晕状态的完整生命周期还需包括 “结束眩晕时的恢复”：
+
+1. **移除眩晕标签**：当眩晕效果结束时，调用 `ASC->RemoveLooseGameplayTag(StunTag)`。
+2. **恢复技能激活能力**：标签移除后，`Activation Blocked Tags` 的阻塞自动解除，技能可重新激活。
+3. **恢复移动**：`GetMaxSpeed()` 会返回正常速度，角色可重新移动。
+
+#### 恢复代码示例：
+
+```cpp
+void RemoveStunEffect(UAbilitySystemComponent* TargetASC)
+{
+    if (!TargetASC) return;
+
+
+
+
+    FGameplayTag StunTag = FGameplayTag::RequestGameplayTag("State.Debuff.Stun");
+    TargetASC->RemoveLooseGameplayTag(StunTag);
+}
+```
+
+### 总结
+
+实现眩晕状态的核心是**标签驱动的多系统协同**：
+
+- 用 `CancelAbilities()` 终止已有技能；
+- 用 `Activation Blocked Tags` 阻止新技能；
+- 用自定义 `CharacterMovement` 冻结移动。
+
+这种设计完全基于 GAS 的标签系统和组件化架构，确保逻辑解耦、扩展灵活（如需添加 “沉默”“冰冻” 等类似状态，只需复用相同模式，替换对应标签即可）
+
+## 5.2 奔跑(Sprint)
+
+没什么说的。
+
+## 5.3 瞄准(Aim Down Sight)
+
+没什么说的。
+
+## 5.4 生命偷取(Lifesteal)
+
+### **对于文中本节的部分代码的解释**
+
+```c++
+int32 Idx = GELifesteal->Modifiers.Num();
+GELifesteal->Modifiers.SetNum(Idx + 1);
+FGameplayModifierInfo& Info = GELifesteal->Modifiers[Idx];
+Info.ModifierMagnitude = FScalableFloat(Lifesteal);
+Info.ModifierOp = EGameplayModOp::Additive;
+Info.Attribute = UPAAttributeSetBase::GetHealthAttribute();
+```
+
+这段代码的核心作用是 **为动态创建的 “生命偷取即时 GameplayEffect（GE）” 手动添加 “生命值恢复的属性修改器”**—— 通过一步步初始化 `FGameplayModifierInfo`（GE 的核心配置单元），定义 “如何修改目标属性”（这里是给攻击者叠加生命值）。下面逐行拆解代码逻辑和背后的 GAS 机制：
+
+#### 先明确前提：动态 GE 与修改器的关系
+
+在 GAS 中，`GameplayEffect` 的核心功能（如加血、减伤、加属性）都通过 **`Modifiers`（修改器数组）** 实现。每个 `Modifier` 对应一个 `FGameplayModifierInfo` 结构体，它定义了：
+
+- **修改哪个属性**（如生命值、攻击力）；
+- **怎么修改**（如叠加、乘法、设置固定值）；
+- **修改多少**（数值大小，支持动态缩放）。
+
+你这段代码的场景是 “动态创建一个即时回血的 GE”，因此需要手动给这个空的 GE 添加上 “恢复生命值” 的修改器 —— 这 5 行代码就是完成这个操作的核心步骤。
+
+#### 逐行代码解析
+
+#### 1. `int32 Idx = GELifesteal->Modifiers.Num();`
+
+- **作用**：获取当前动态 GE（`GELifesteal`）的 `Modifiers` 数组的 “当前元素数量”，作为新修改器的索引。
+- 细节：
+  - `GELifesteal` 是你通过 `NewObject` 动态创建的空 GE，初始状态下 `Modifiers` 数组是空的（`Num() = 0`），所以 `Idx` 此时为 0；
+  - 索引 `Idx` 确保新添加的修改器会放在数组的 “最后一位”，避免覆盖已有修改器（虽然这里是第一个，但代码逻辑支持后续添加多个）。
+
+#### 2. `GELifesteal->Modifiers.SetNum(Idx + 1);`
+
+- **作用**：将 `Modifiers` 数组的长度增加 1，为新的修改器 “腾出空间”。
+- 细节：
+  - `SetNum(NewSize)` 是 UE 数组的常用函数，用于调整数组大小；
+  - 因为 `Idx` 是原数组长度（如 0），`Idx + 1` 就是新长度（如 1），相当于 “在空数组中新增一个空位”，后续可以往这个空位里填充修改器信息。
+
+#### 3. `FGameplayModifierInfo& Info = GELifesteal->Modifiers[Idx];`
+
+- **作用**：通过索引 `Idx` 获取刚新增的 “空修改器”，并创建一个**引用（&）** 以便后续赋值。
+- 关键：
+  - 用引用（`&`）而不是值拷贝，是为了直接修改数组中那个 “空修改器” 的内存数据（如果不用引用，会创建一个临时副本，修改后不会同步到数组中）；
+  - 此时 `Info` 就是数组中第 `Idx` 位（如第 0 位）的修改器，后续对 `Info` 的赋值都会直接作用于 `GELifesteal` 的 `Modifiers` 数组。
+
+#### 4. `Info.ModifierMagnitude = FScalableFloat(Lifesteal);`
+
+- **作用**：设置修改器的 “数值大小”—— 这里是生命偷取的具体回血量。
+- 细节：
+  - `ModifierMagnitude`：修改器的核心数值字段，类型是 `FScalableFloat`（支持动态缩放的浮点数，可根据等级、标签等动态调整数值）；
+  - `Lifesteal` 是你计算出的回血量（如 `Damage * LifestealPercent`），通过 `FScalableFloat(Lifesteal)` 包装后，作为修改器的固定数值（这里没有动态缩放，所以直接传固定值）。
+
+#### 5. `Info.ModifierOp = EGameplayModOp::Additive;`
+
+- **作用**：设置修改器的 “运算类型”—— 这里是 “叠加”，即把回血量直接加到当前生命值上。
+- `EGameplayModOp` 常用类型：
+  - `Additive`：叠加（如当前生命值 100，加 20 → 120）；
+  - `Multiplicative`：乘法（如攻击力 100，乘 1.2 → 120）；
+  - `Override`：覆盖（如把生命值直接设为 200，忽略当前值）；
+- **为什么用 `Additive`**：生命偷取是 “在现有生命值基础上增加”，符合 `Additive` 的运算逻辑。
+
+#### 6. `Info.Attribute = UPAAttributeSetBase::GetHealthAttribute();`
+
+- **作用**：设置修改器 “要修改的属性”—— 这里是 “生命值”。
+- 细节：
+  - `Attribute` 字段需要指定一个 `FGameplayAttribute` 类型的属性，这个属性必须来自你自定义的 `AttributeSet`（如 `UPAAttributeSetBase`）；
+  - `UPAAttributeSetBase::GetHealthAttribute()` 是你在 `AttributeSet` 中定义的 “获取生命值属性” 的静态函数（标准写法），返回的是生命值对应的 `FGameplayAttribute`，确保修改器能精准定位到 “生命值” 这个属性。
+
+#### 整体逻辑总结
+
+这 6 行代码的本质是 “手动构建一个完整的属性修改器，并添加到动态 GE 中”，完整流程如下：
+
+1. 查空 GE 的修改器数组长度 → 确定新修改器的索引；
+2. 扩展数组长度 → 为新修改器留空位；
+3. 引用空位的修改器 → 准备赋值；
+4. 设回血量 → 改多少；
+5. 设运算类型 → 怎么改（叠加）；
+6. 设目标属性 → 改哪个（生命值）。
+
+最终，这个动态创建的 `GELifesteal`（即时 GE）就拥有了 “叠加回血量到生命值” 的功能，应用到攻击者的 ASC 后，就能实现生命偷取的回血效果。
+
+## 5.5 在客户端和服务端中生成随机数
+
+
+
+## 5.6 暴击(Critical Hits)
+
+
+
+## 5.7 非堆栈GameplayEffect, 但是只有其最高级(Greatest Magnitude)才能实际影响Target
+
+在 GAS 中，“非堆栈但仅最高数值（Greatest Magnitude）生效的 GameplayEffect（如 Paragon 的减速效果）” 是典型的 “多实例共存、单实例生效” 场景。这种设计的核心是 **通过 `AggregatorEvaluateMetaData` 元数据控制属性聚合逻辑**，让多个非堆栈 GE 实例中，只有数值最大的那个能实际影响目标属性。下面从 “核心原理”“实现步骤”“关键代码” 三个维度拆解：
+
+### 一、核心原理：非堆栈 GE 与聚合逻辑的关系
+
+首先要明确两个基础概念，这是理解该场景的前提：
+
+#### 1. 非堆栈 GE（Non-Stacking GE）的默认行为
+
+非堆栈 GE 的核心规则是：**同一类型的 GE 多次应用时，不会创建多个独立实例叠加效果，而是会 “刷新生命周期” 或 “覆盖数值”**（具体取决于配置）。
+但 Paragon 减速的需求特殊：
+
+- 允许同一类型的减速 GE 存在多个实例（如 “技能 A 减速 30%，持续 5 秒；技能 B 减速 50%，持续 3 秒” 可同时存在）；
+- 多个实例都正常跟踪自己的生命周期（3 秒后技能 B 失效，自动切换为技能 A 的 30% 减速）；
+- 但在任意时刻，**只有数值最大（Magnitude）的实例会实际修改目标的移动速度属性**。
+
+这种需求无法通过 GE 的默认堆栈规则实现，必须借助 GAS 的 **`Attribute Aggregator`（属性聚合器）** 和 **`AggregatorEvaluateMetaData`（聚合元数据）** 自定义聚合逻辑。
+
+#### 2. Attribute Aggregator 的作用
+
+`Attribute Aggregator` 是 GAS 中负责 “收集所有影响同一属性的 GE 修改器，并计算最终属性值” 的核心模块。例如：
+
+- 目标的 “移动速度” 属性可能被 3 个减速 GE 影响（-20%、-30%、-50%）；
+- 聚合器会默认将这些修改器按规则合并（如叠加计算，最终减速 100%）；
+- 而我们需要的是 “只取数值最大的修改器（-50%），忽略其他”—— 这就需要通过 `AggregatorEvaluateMetaData` 告诉聚合器 “自定义合并规则”。
+
+#### 3. AggregatorEvaluateMetaData 的角色
+
+`AggregatorEvaluateMetaData` 是一种 “元数据标签”，可以附加到 `GameplayEffectModifierInfo`（GE 修改器）上。它的核心作用是：
+
+- 向 `Attribute Aggregator` 传递 “如何处理当前修改器” 的指令；
+- 对于 “仅最高数值生效” 的场景，我们需要通过它标记 “该修改器属于‘取最大值’组”，聚合器会自动筛选出该组中数值最大的修改器，仅用它计算最终属性值。
+
+### 二、实现步骤：让非堆栈 GE 仅最高数值生效
+
+以 “减速效果（Slow Effect）” 为例，完整实现需要 3 个关键步骤：
+
+#### 步骤 1：配置非堆栈 GE 的基础属性
+
+首先创建一个 “减速 GE”（如 `GE_Slow`），并确保其基础配置符合 “非堆栈但多实例共存” 的需求：
+
+1. **设置堆栈模式**：在 GE 的 “Details 面板”→“Stacking” 中，选择 **`Non-Stacking`**（非堆栈）；
+
+2. **设置生命周期刷新规则**：在 “Stacking”→“Refresh Duration Policy” 中，选择 **`Refresh Duration on Application`**（每次应用时刷新生命周期，或根据需求选择 “不刷新”，确保多实例各自独立计时）；
+
+3. 添加减速修改器
+
+   ：在 “Modifiers” 中添加 “移动速度” 的修改器：
+
+   - `Attribute`：选择自定义 `AttributeSet` 中的 “移动速度” 属性（如 `UMyAttributeSet::GetMoveSpeedAttribute()`）；
+   - `Modifier Op`：选择 `Multiplicative`（乘法，如减速 30% 对应数值 0.7）；
+   - `Modifier Magnitude`：设置减速数值（如 0.7 表示 30% 减速，0.5 表示 50% 减速）；
+   - **关键**：在修改器的 “MetaData” 中，添加 `AggregatorEvaluateMetaData` 标签，键为 `Group`，值为自定义分组名（如 `SlowEffectGroup`）—— 用于告诉聚合器 “所有带这个分组的修改器，只取最大值生效”。
+
+#### 步骤 2：在 AttributeSet 中注册聚合规则
+
+接下来需要在 “移动速度” 属性所属的 `AttributeSet` 中，通过 `OnAttributeAggregatorCreated` 函数，为该属性的聚合器注册 “取最大值” 的自定义逻辑：
+
+- `OnAttributeAggregatorCreated` 是 `UAttributeSet` 的虚函数，在属性的聚合器被创建时触发，允许我们自定义聚合规则；
+- 我们需要在这里告诉聚合器：“对于所有属于 `SlowEffectGroup` 分组的修改器，仅保留数值最大的那个参与计算”。
+
+#### 步骤 3：实现自定义聚合逻辑
+
+通过重写 `OnAttributeAggregatorCreated`，为 “移动速度” 属性的聚合器添加 “取最大值” 的筛选规则。
+
+### 三、关键代码实现
+
+#### 1. 在 AttributeSet 中重写 OnAttributeAggregatorCreated
+
+cpp
+
+
+
+运行
+
+
+
+
+
+
+
+
+
+```cpp
+// 自定义 AttributeSet（如 UMyAttributeSet）
+#include "Abilities/AttributeSet.h"
+#include "MyAttributeSet.generated.h"
+
+UCLASS()
+class MYGAME_API UMyAttributeSet : public UAttributeSet
+{
+    GENERATED_BODY()
+
+public:
+    // 声明“移动速度”属性
+    UPROPERTY(BlueprintReadOnly, Category = "Movement", ReplicatedUsing = OnRep_MoveSpeed)
+    float MoveSpeed = 500.0f; // 默认移动速度 500
+    ATTRIBUTE_ACCESSORS(UMyAttributeSet, MoveSpeed);
+
+    // 聚合器创建时触发，注册自定义聚合规则
+    virtual void OnAttributeAggregatorCreated(const FGameplayAttribute& Attribute, FAggregator* NewAggregator) override
+    {
+        Super::OnAttributeAggregatorCreated(Attribute, NewAggregator);
+
+        // 只对“移动速度”属性应用该规则
+        if (Attribute == GetMoveSpeedAttribute())
+        {
+            // 1. 创建“取最大值”的聚合策略
+            // 策略逻辑：对于同一 Group（如 SlowEffectGroup）的修改器，仅保留数值最大的那个
+            auto MaxMagnitudeStrategy = [](const TArray<const FAggregatorModifier*> Modifiers, const FAggregatorEvaluateParameters& Params) -> float
+            {
+                float MaxValue = 1.0f; // 默认值（无减速时为 1.0，即不影响速度）
+
+                for (const auto* Mod : Modifiers)
+                {
+                    // 2. 检查修改器是否带有“SlowEffectGroup”分组的元数据
+                    if (const auto* MetaData = Mod->ModifierInfo.MetaData.FindByKey("Group"))
+                    {
+                        if (MetaData->Value.ToString() == "SlowEffectGroup")
+                        {
+                            // 3. 计算当前修改器的数值（支持动态缩放，如随等级变化）
+                            float CurrentValue = Mod->GetEvaluatedMagnitude(Params);
+                            // 4. 保留数值最小的（因为减速是乘法，0.5 < 0.7，对应减速更严重）
+                            // 注意：若修改器是“加法”（如 Additive），则取最大数值；这里是乘法，取最小数值
+                            MaxValue = FMath::Min(MaxValue, CurrentValue);
+                        }
+                    }
+                }
+
+                return MaxValue;
+            };
+
+            // 5. 将自定义策略绑定到聚合器的“乘法修改器”计算中
+            // 因为减速修改器用的是 Multiplicative，所以绑定到 MultiplyModifiers 回调
+            NewAggregator->MultiplyModifiers.Add(MaxMagnitudeStrategy);
+        }
+    }
+
+private:
+    // 移动速度属性同步回调（可选，用于客户端同步服务器数值）
+    UFUNCTION()
+    void OnRep_MoveSpeed()
+    {
+        GAMEPLAYATTRIBUTE_REPNOTIFY(UMyAttributeSet, MoveSpeed);
+    }
+};
+```
+
+#### 2. 关键代码解析
+
+- **聚合策略 lambda 函数**：
+  该函数会遍历所有影响 “移动速度” 的乘法修改器，筛选出 “`Group` 为 `SlowEffectGroup`” 的修改器，然后取其中数值最小的（因为减速是乘法，0.5 比 0.7 减速更严重，对应 “最高级减速”）。
+  - 若修改器是 “加法”（如 Additive，直接减少固定速度值），则需改为 `FMath::Max(MaxValue, CurrentValue)`，取最大数值；
+  - 这里的逻辑完全根据修改器的运算类型（`Modifier Op`）调整，确保 “最高级效果” 的定义符合游戏需求。
+- **绑定到聚合器**：
+  通过 `NewAggregator->MultiplyModifiers.Add(...)` 将自定义策略绑定到 “乘法修改器” 的计算流程中 —— 因为我们的减速修改器用的是 `Multiplicative`（乘法），所以要绑定到 `MultiplyModifiers` 列表；若修改器是加法，则绑定到 `AddModifiers` 列表。
+
+#### 3. GE 修改器的元数据配置（蓝图 / 代码）
+
+- **蓝图配置**：在 `GE_Slow` 的修改器 “MetaData” 中，点击 “+” 添加新元数据，`Key` 填 `Group`，`Value` 填 `SlowEffectGroup`（需与代码中的分组名一致）；
+
+- 代码配置
+
+  （动态创建 GE 时）：
+
+  cpp
+
+  
+
+  运行
+
+  
+
+  
+
+  
+
+  
+
+  ```cpp
+  // 动态创建减速 GE 的修改器时，手动添加元数据
+  FGameplayModifierInfo SlowModifier;
+  SlowModifier.Attribute = UMyAttributeSet::GetMoveSpeedAttribute();
+  SlowModifier.ModifierOp = EGameplayModOp::Multiplicative;
+  SlowModifier.ModifierMagnitude = FScalableFloat(0.5f); // 50% 减速
+  
+  // 添加 AggregatorEvaluateMetaData：Group = SlowEffectGroup
+  FGameplayModifierMetaData MetaData;
+  MetaData.Key = "Group";
+  MetaData.Value = FGameplayTag::RequestGameplayTag("SlowEffectGroup"); // 或直接用字符串
+  SlowModifier.MetaData.Add(MetaData);
+  
+  // 将修改器添加到动态 GE 中
+  GESlow->Modifiers.Add(SlowModifier);
+  ```
+
+### 四、效果验证与生命周期管理
+
+#### 1. 多实例共存与生效逻辑
+
+当目标同时被多个 `GE_Slow` 实例影响时（如 30% 减速、50% 减速、20% 减速）：
+
+- 聚合器会通过自定义策略筛选出数值最小的修改器（50% 减速，对应 0.5）；
+- 最终目标的移动速度 = 基础速度 × 0.5（仅受 50% 减速影响）；
+- 当 50% 减速的 GE 生命周期结束后，聚合器会重新筛选，此时数值最小的是 30% 减速（0.7），目标速度自动切换为基础速度 × 0.7。
+
+#### 2. 生命周期跟踪
+
+每个 `GE_Slow` 实例都会独立跟踪自己的生命周期（开始时间、持续时间），即使未生效，也会正常计时，计时结束后自动从聚合器中移除 —— 无需额外代码处理，GAS 会自动管理实例的创建与销毁。
+
+### 五、总结
+
+“非堆栈 GE 仅最高数值生效” 的核心是 **借助 `AggregatorEvaluateMetaData` 标记修改器分组，再通过 `OnAttributeAggregatorCreated` 自定义聚合逻辑**，让属性聚合器只筛选出分组中数值最优的修改器参与计算。这种实现方式完全符合 GAS 的模块化设计，不仅适用于减速效果，还可扩展到 “仅最高伤害加成生效”“仅最高治疗量生效” 等类似场景 —— 只需修改分组名和聚合策略中的数值比较逻辑即可。
+
+## 5.8 游戏暂停时生成TargetData
+
+用到再说。
+
+## 5.9 按钮交互系统(Button Interaction System)
+
+用到再说。
+
+# 6. 调试GAS
+
+## 6.1 showdebug abilitysystem
+
+看文中内容即可。
+
+## 6.2 Gameplay Debugger
+
+看文中内容即可。
+
+## 6.3 GAS日志(Logging)
+
+看文中内容即可。
+
+# 7. 优化
+
