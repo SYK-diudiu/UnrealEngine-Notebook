@@ -393,6 +393,22 @@ ATTRIBUTE_ACCESSORS(UCustomAttributeSet, Health);
 
 ## Gameplay Ability
 
+一个`Cooldown GE`仅需满足以下要求：
+
+- 为`Has Duration`类型，`Duration Magnitude`计算方式为`Set By Caller` 或 `Custom Calculation Class`。
+- `Granted Tags`为技能的冷却`Tag`，如`Cooldown.skill1`。
+
+在`Cooldown GE`持续期间，玩家的`ASC`组件就会携带对应技能的`Cooldown Tag`，本质是通过`Tag`来限制的。
+
+*冷却Tag建议以Cooldown开头统一管理。
+
+一个Cost GE仅需满足一下要求：
+
+- 为Instant类型。
+- 有一个或多个Modifier去修改对应的属性，计算方式为Custom Calculation Class。
+
+如果CostGE不生效则有可能是代码或蓝图中没有调用`CommitAbility()`函数导致。**只有调用`CommitAbility`，才会触发 GA 配置的 CostGE 应用**。
+
 ## Ability Task
 
 ## Gameplay Effect

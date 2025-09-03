@@ -155,7 +155,7 @@ void AGASTestDemoCharacter::PossessedBy(AController* NewController)
 
 **补充**：
 
-我们知道上述`PossessedBy`函数的函数体是`ASC`存在于`Character`上的情况。还有一种情况是我们的`ASC`存在于`PlayState`上，那么此时在`Character`中重写的这个`PossessedBy`函数的实现方式如下：
+我们知道上述`PossessedBy`函数的函数体是`ASC`存在于`Character`上的情况。还有一种情况是我们的`ASC`存在于`PlayerState`上，那么此时在`Character`中重写的这个`PossessedBy`函数的实现方式如下：
 
 ```C++
 void AGASTestDemoCharacter::PossessedBy(AController * NewController)
@@ -175,6 +175,94 @@ void AGASTestDemoCharacter::PossessedBy(AController * NewController)
 	//...
 }
 ```
+
+## 为ASC添加AttributeSet
+
+`ASC`的工作离不开`Attribute`，角色的属性都放在了`AttributeSet`里，因此`AttributeSet`应该添加到`ASC`所在的类里面。
+
+如果`ASC`存在与`Character`，那么`AttributeSet`就应该存在于`Character`；如果`ASC`存在于`PlayerState`，那么`AttributeSet`就应该存在于`PlayerState`。
+
+### 继承UAttributeSet
+
+此外还需要添加以下代码到头文件中
+
+```C++
+// 这里的宏主要用于帮我们自动生成各个属性的相关Get、Set函数
+// 需要在声明的每个属性下面使用该宏
+#define ATTRIBUTE_ACCESSORS(ClassName, PropertyName) \
+GAMEPLAYATTRIBUTE_PROPERTY_GETTER(ClassName, PropertyName) \
+GAMEPLAYATTRIBUTE_VALUE_GETTER(PropertyName) \
+GAMEPLAYATTRIBUTE_VALUE_SETTER(PropertyName) \
+GAMEPLAYATTRIBUTE_VALUE_INITTER(PropertyName)
+```
+
+下面是头文件代码
+
+```C++
+#pragma once
+
+#include "CoreMinimal.h"
+#include "AttributeSet.h"
+#include "AbilitySystemComponent.h"
+#include "MyAttributeSet.generated.h"
+
+// 这里的宏主要用于帮我们自动生成各个属性的相关Get、Set函数
+// 需要在声明的每个属性下面使用该宏
+#define ATTRIBUTE_ACCESSORS(ClassName, PropertyName) \
+GAMEPLAYATTRIBUTE_PROPERTY_GETTER(ClassName, PropertyName) \
+GAMEPLAYATTRIBUTE_VALUE_GETTER(PropertyName) \
+GAMEPLAYATTRIBUTE_VALUE_SETTER(PropertyName) \
+GAMEPLAYATTRIBUTE_VALUE_INITTER(PropertyName)
+
+UCLASS()
+class GASTESTDEMO_API UMyAttributeSet : public UAttributeSet
+{
+	GENERATED_BODY()
+public:
+    // --------------------------
+    // 示例属性：生命值
+    // --------------------------
+    UPROPERTY(BlueprintReadOnly, Category = "Health")
+    FGameplayAttributeData Health;
+    ATTRIBUTE_ACCESSORS(UMyAttributeSet, Health)
+
+    // --------------------------
+    // 示例属性：最大生命值
+    // --------------------------
+    UPROPERTY(BlueprintReadOnly, Category = "Health")
+    FGameplayAttributeData MaxHealth;
+    ATTRIBUTE_ACCESSORS(UMyAttributeSet, MaxHealth)
+};
+```
+
+源文件暂时不需要写什么内容，只看头文件即可。
+
+现在有了自己的`AttributeSet`类，这里就是`UMyAttributeSet`类，类中有两个`Attribute`，分别代表**生命值**和**最大生命值**。
+
+### 添加原始AS
+
+在`ASC`所在类的头文件中添加`UMyAttributeSet`类指针。
+
+```C++
+UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "GAS", meta = (AllowPrivateAccess = "true"))
+UMyAttributeSet* OriginAS;
+```
+
+**重点**：在`ASC`的`OwnerActor`的构造函数中创建的`AttributeSet`将会自动注册到`ASC`。
+
+如果`ASC`的`OwnerActor`是`Character`，就写在`Character`类的构造函数中，如果`ASC`的`OwnerActor`是`PlayerState`就写在`PlayerState`的构造函数中，这种情况下实例化出来的`AS`可以自动注册到`ASC`，无需调用接口手动注册。
+
+在`ASC`的`OwnerActor`的构造函数中实例化`OriginAS`。
+
+```C++
+OriginAS = CreateDefaultSubobject<UMyAttributeSet>(TEXT("MyAttributeSet"));
+```
+
+到此即成功将我们的自定义`AS`添加到`ASC`上了。
+
+# 注意事项
+
+ASC、GA、AttributeSet等相关变量名、指针名，尽量不要存在与引擎内部相同的可能，否则可能会出现难以预料的问题。
 
 # 常用术语缩略
 
