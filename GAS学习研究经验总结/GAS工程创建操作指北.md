@@ -129,9 +129,19 @@ UAbilitySystemComponent* AGASTestDemoCharacter::GetAbilitySystemComponent() cons
 AbilitySystemComponent->InitAbilityActorInfo(OwnerActor*, AvatarActor*);
 ```
 
-初始化时机最好把握在使用`ASC`相关核心功能之前，如释放GA。
+#### 核心前提：明确`InitAbilityActorInfo`的依赖条件
 
-可以写在`BeginPlay()`函数中，但是我这里重写了父类`Pawn`中的`PossessedBy`函数，并在其基础上添加初始化`ASC`的代码。
+调用`InitAbilityActorInfo`前，必须确保两个核心条件已就绪，否则会导致绑定失败：
+
+1. **ASC 实例已创建并初始化**（如通过`CreateDefaultSubobject`或动态创建）；
+2. **角色（Actor）的`ActorInfo`容器已有效**（包含角色的`Mesh`、`PlayerController`等关键信息，通常在角色`BeginPlay`或被控制器控制后初始化）。
+
+简单来说：必须先有`ASC`和 “可被绑定的角色”，才能执行初始化绑定。
+
+我这里重写了父类`Pawn`中的`PossessedBy`函数，并在其基础上添加初始化`ASC`的代码。
+
+**为什么不推荐放在`BeginPlay`？**
+`BeginPlay`在 “角色生成时” 执行，但玩家角色的`PlayerController`可能未完成接管（如加载场景时角色先生成，控制器后连接），此时`InitAbilityActorInfo`的第二个参数（控制器）为空，会导致 “技能无法响应玩家输入”。而`PossessedBy`在控制器接管时触发，能确保控制器信息有效。
 
 ```C++
 virtual void PossessedBy(AController* NewController) override;
@@ -225,6 +235,9 @@ public:
     UPROPERTY(BlueprintReadOnly, Category = "Health")
     FGameplayAttributeData Health;
     ATTRIBUTE_ACCESSORS(UMyAttributeSet, Health)
+        
+    //写到这里需要添加头文件
+    //#include "AbilitySystemComponent.h"
 
     // --------------------------
     // 示例属性：最大生命值
