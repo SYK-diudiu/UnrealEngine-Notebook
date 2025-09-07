@@ -206,6 +206,15 @@ GAMEPLAYATTRIBUTE_VALUE_SETTER(PropertyName) \
 GAMEPLAYATTRIBUTE_VALUE_INITTER(PropertyName)
 ```
 
+`ATTRIBUTE_ACCESSORS`这个宏会自动生成以下函数(以Health属性为例)
+
+```C++
+GetHealthAttribute();
+GetHealth();
+SetHealth(float NewValue);
+InitHealth(float BaseValue);
+```
+
 下面是头文件代码
 
 ```C++
