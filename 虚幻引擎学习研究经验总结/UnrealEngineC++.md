@@ -1280,11 +1280,19 @@ struct FMyCustomStruct
 
 ### 函数元数据说明符
 
+#### 1、`meta = (AllowPrivateAccess = true)`
+
+如果类中的某个属性或函数的访问权限为`private`，但是同时又希望在蓝图中使用时可以添加该元数据说明符。
+
 ### 属性元数据说明符
 
 #### 1、`DisplayName`
 
 ​	指定属性在蓝图编辑器中显示的名称。例如 `DisplayName = "My Property"` 会将属性显示为 "My Property"。
+
+#### 2、`meta = (AllowPrivateAccess = true)`
+
+如果类中的某个属性或函数的访问权限为`private`，但是同时又希望在蓝图中使用时可以添加该元数据说明符。
 
 ## 虚幻引擎中的容器
 
