@@ -1280,10 +1280,6 @@ struct FMyCustomStruct
 
 ### 函数元数据说明符
 
-#### 1、`meta = (AllowPrivateAccess = true)`
-
-如果类中的某个属性或函数的访问权限为`private`，但是同时又希望在蓝图中使用时可以添加该元数据说明符。
-
 ### 属性元数据说明符
 
 #### 1、`DisplayName`
