@@ -2982,7 +2982,7 @@ DECLARE_LOG_CATEGORY_EXTERN(<LOG_CATEGORY>, <VERBOSITY_LEVEL>, All);
 |     冗长（Verbose）     |       否       |         否         |  不适用  |                  不适用                  |
 | 极其冗长（VeryVerbose） |       否       |         否         |  不适用  | 可使用日志掩码和特殊枚举值设置文本颜色。 |
 
-在相关`.cpp`文件中，在include指令下方添加以下内容：
+在相关`.cpp`文件中，在`include`下方添加以下内容：
 
 ```cpp
 DEFINE_LOG_CATEGORY(<LOG_CATEGORY>);
